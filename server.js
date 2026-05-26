@@ -71,7 +71,8 @@ const defaultOrigins = [
   'http://127.0.0.1:3001',
   'https://frotamak.com',
   'https://www.frotamak.com',
-  'https://frotasmak-frotas-backend.oehpg2.easypanel.host'
+  'https://frotasmak-frotas-backend.oehpg2.easypanel.host',
+  'https://frotasmak-front-desenvolvimento.oehpg2.easypanel.host'
 ];
 
 // 🚨 CORREÇÃO: Unimos as origens padrão com as customizadas para garantir que o sistema não perca o acesso
