@@ -71,8 +71,7 @@ const defaultOrigins = [
   'http://127.0.0.1:3001',
   'https://frotamak.com',
   'https://www.frotamak.com',
-  'https://frotasmak-frotas-backend.oehpg2.easypanel.host',
-  'https://frotasmak-front-desenvolvimento.oehpg2.easypanel.host'
+  'https://frotasmak-frotas-backend.oehpg2.easypanel.host'
 ];
 
 // 🚨 CORREÇÃO: Unimos as origens padrão com as customizadas para garantir que o sistema não perca o acesso
@@ -116,7 +115,8 @@ const app = express();
 // sem precisarmos definir app.options('*', ...) o que estava quebrando o path-to-regexp atualizado.
 app.use(cors(corsOptions));
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // 🚨 CORREÇÃO: Rota vazia para o favicon.ico para não poluir os logs com erro 404
 app.get('/favicon.ico', (req, res) => res.status(204).end());

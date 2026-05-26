@@ -1,10 +1,9 @@
 const axios = require('axios');
-const db = require('../database'); // Mantendo seu import original de DB
+const db = require('../database');
 
-const WA_URL = process.env.WHATSAPP_SERVICE_URL; // ex: http://frotasmak-whatsapp:3002 ou https://evo.frotamak.com
+const WA_URL = process.env.WHATSAPP_SERVICE_URL;
 const WA_KEY = process.env.WHATSAPP_SERVICE_KEY;
 
-// Mantendo todos os seus contatos internos intactos
 const CONTATOS_INTERNOS = {
     ALMIR:     '555199111090',
     LEANDRO:   '555192481722',
@@ -16,13 +15,19 @@ const CONTATOS_INTERNOS = {
     ALEXANDRO: '555181708680'
 };
 
-// Mantendo sua lógica original de formatação de DDD/DDI
 function formatarNumero(numero) {
     if (!numero) return null;
-    let limpo = String(numero).replace(/\D/g, '');
-    if (limpo.length === 8 || limpo.length === 9) return '5551' + limpo;
-    if (limpo.length === 10 || limpo.length === 11) return '55' + limpo;
-    return limpo;
+    const str = String(numero);
+    // Preserva sufixo WhatsApp (@c.us, @lid, etc.) para que o envio chegue ao JID correto
+    const suffixMatch = str.match(/(@\S+)$/);
+    const suffix = suffixMatch ? suffixMatch[1] : null;
+    let limpo = str.replace(/\D/g, '');
+    if (!limpo) return null;
+    let formatted;
+    if (limpo.length === 8 || limpo.length === 9) formatted = '5551' + limpo;
+    else if (limpo.length === 10 || limpo.length === 11) formatted = '55' + limpo;
+    else formatted = limpo;
+    return suffix ? formatted + suffix : formatted;
 }
 
 function waHeaders() {
@@ -30,17 +35,19 @@ function waHeaders() {
 }
 
 const whatsappService = {
-    // Busca o status atualizado do microsserviço, que agora retorna {status, qr}
     async getStatus() {
         if (!WA_URL || !WA_KEY) {
             console.error('⚠️ WHATSAPP_SERVICE_URL ou WHATSAPP_SERVICE_KEY não definidos.');
+            if (global.io) global.io.emit('admin:notificacao', { tipo: 'whatsapp_nao_configurado' });
             return { status: 'NAO_CONFIGURADO', qr: null };
         }
         try {
             const { data } = await axios.get(`${WA_URL}/status`, { headers: waHeaders(), timeout: 5000 });
             return data;
         } catch (error) {
-            console.error('❌ Erro ao buscar status do WhatsApp:', error.message);
+            console.error('❌ Serviço WhatsApp DESCONECTADO:', error.message);
+            // item 7: notifica admin via socket
+            if (global.io) global.io.emit('admin:notificacao', { tipo: 'whatsapp_desconectado', erro: error.message });
             return { status: 'DESCONECTADO', qr: null };
         }
     },
@@ -51,7 +58,6 @@ const whatsappService = {
         return data;
     },
 
-    // Mantendo a sua função original de envio com Inserção no Banco (whatsapp_logs)
     async enviarMensagem(numeroDestino, nomeDestinatario, motivo, mensagem, anexoUrl = null) {
         if (!WA_URL || !WA_KEY) {
             console.warn(`⚠️ Ignorando envio para ${nomeDestinatario} (WhatsApp não configurado).`);
@@ -63,7 +69,7 @@ const whatsappService = {
 
         try {
             const payload = { number: numeroFormatado, message: mensagem };
-            if (anexoUrl) payload.documentUrl = anexoUrl.replace('http://', 'https://');
+            if (anexoUrl) payload.documentUrl = anexoUrl;
 
             const { data } = await axios.post(
                 `${WA_URL}/send`,
@@ -73,7 +79,6 @@ const whatsappService = {
 
             const messageId = data.messageId || null;
 
-            // Log de SUCESSO no banco de dados mantido intacto
             await db.query(
                 `INSERT INTO whatsapp_logs
                  (destinatario_nome, destinatario_numero, motivo_envio, mensagem, anexo_url, message_id_api, status)
@@ -88,7 +93,6 @@ const whatsappService = {
             const erroReal = error.response?.data?.error || error.message;
             console.error('❌ Erro no envio WhatsApp:', erroReal);
 
-            // Log de FALHA no banco de dados mantido intacto
             try {
                 await db.query(
                     `INSERT INTO whatsapp_logs
