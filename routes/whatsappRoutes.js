@@ -53,6 +53,20 @@ router.get('/logs', async (req, res) => {
     }
 });
 
+// Enviar ordem de abastecimento diretamente pelo microsserviço
+router.post('/enviar-ordem', async (req, res) => {
+    const { numero, nome, mensagem, documentUrl } = req.body;
+    if (!numero || !mensagem) {
+        return res.status(400).json({ error: 'Campos obrigatórios: numero, mensagem' });
+    }
+    try {
+        await whatsappService.enviarMensagem(numero, nome || 'Posto', 'ORDEM_ABASTECIMENTO', mensagem, documentUrl || null);
+        res.json({ ok: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Sessões ativas do chatbot
 router.get('/chatbot-sessions', async (req, res) => {
     try {

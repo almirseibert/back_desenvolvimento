@@ -105,6 +105,9 @@ const horaTeste = getGmt3Date();
 console.log(`✅ [CRON] Inicializado. Horário atual calculado (GMT-3): ${String(horaTeste.getUTCHours()).padStart(2, '0')}:${String(horaTeste.getUTCMinutes()).padStart(2, '0')}`);
 console.log(`✅ [CRON] Rotina diária de RH configurada para disparar às: ${String(HORA_EXECUCAO).padStart(2, '0')}:${String(MINUTO_EXECUCAO).padStart(2, '0')}`);
 
+// item 12: rastreia sessões que já receberam aviso de timeout (sem schema change)
+const chatbotTimeoutWarningsSent = new Set();
+
 // ====================================================================
 // O CRON RODA TODO MINUTO PARA GARANTIR A PRECISÃO (Agenda e Diário)
 // ====================================================================
@@ -338,9 +341,32 @@ cron.schedule('* * * * *', async () => {
         }
 
         // ====================================================================
-        // 2. LIMPEZA DE SESSÕES CHATBOT (roda a cada minuto — idempotente)
-        // Remove sessões inativas há mais de 30min que não foram concluídas
+        // 2. LIMPEZA + AVISO DE TIMEOUT DO CHATBOT
         // ====================================================================
+        // item 12: avisa sessões prestes a expirar (entre 25 e 29 min de inatividade)
+        try {
+            const [quaseExpirando] = await db.query(
+                `SELECT id, phone_number, employee_name FROM whatsapp_chatbot_sessions
+                 WHERE step NOT IN ('concluido', 'cancelado', 'processando')
+                   AND last_activity BETWEEN DATE_SUB(NOW(), INTERVAL 29 MINUTE)
+                                        AND DATE_SUB(NOW(), INTERVAL 25 MINUTE)`
+            );
+            for (const s of quaseExpirando) {
+                if (!chatbotTimeoutWarningsSent.has(s.id)) {
+                    chatbotTimeoutWarningsSent.add(s.id);
+                    await whatsappService.enviarMensagem(
+                        s.phone_number,
+                        s.employee_name || 'Usuário',
+                        'CHATBOT_TIMEOUT_AVISO',
+                        `⏰ Sua solicitação de abastecimento será cancelada em 5 minutos por inatividade.\n\nResponda para continuar ou envie *cancelar* para encerrar.`
+                    ).catch(e => console.error('[CRON] Erro ao enviar aviso timeout chatbot:', e.message));
+                }
+            }
+            // Limpa o Set periodicamente para não crescer indefinidamente
+            if (chatbotTimeoutWarningsSent.size > 500) chatbotTimeoutWarningsSent.clear();
+        } catch (e) { console.error('❌ [CRON] Erro no aviso timeout chatbot:', e.message); }
+
+        // Remove sessões inativas há mais de 30min que não foram concluídas
         try {
             await db.query(
                 `UPDATE whatsapp_chatbot_sessions SET step = 'cancelado'
