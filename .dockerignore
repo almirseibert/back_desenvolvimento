@@ -1,0 +1,30 @@
+# Build/dependencies
+node_modules
+npm-debug.log
+.git
+.gitignore
+
+# IMPORTANTE: nunca deixar .env.local entrar no container de produção
+.env.local
+.env.*.local
+
+# Editor
+.vscode
+.idea
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Uploads locais (montar como volume no Easypanel)
+public/uploads
+
+# Arquivos de teste/scratch
+*.test.js
+tests/
+coverage/
+
+# README e docs (opcional — economiza alguns KB)
+README.md
+*.md
