@@ -151,15 +151,16 @@ async function initClient() {
 
             // Resolve o número de telefone real do contato para identificação no banco
             let phoneNumber = null;
-            try {
-                const contact = await msg.getContact();
-                if (contact?.number) {
-                    phoneNumber = contact.number;
-                } else if (!from.endsWith('@lid')) {
-                    phoneNumber = from.replace(/@\S+$/, '');
-                }
-            } catch (_) {
-                if (!from.endsWith('@lid')) phoneNumber = from.replace(/@\S+$/, '');
+            if (from.endsWith('@lid')) {
+                try {
+                    const phoneWid = await client.pupPage.evaluate(async (lid) => {
+                        const result = await window.WWebJS.enforceLidAndPnRetrieval(lid);
+                        return result?.phone?._serialized || null;
+                    }, from);
+                    if (phoneWid) phoneNumber = phoneWid.replace(/@\S+$/, '');
+                } catch (_) {}
+            } else {
+                phoneNumber = from.replace(/@\S+$/, '');
             }
 
             let mediaBase64 = null, mediaMimetype = null;
