@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(netstat *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Get-WmiObject *)",
+      "PowerShell(Stop-Process *)",
+      "Bash(curl *)",
+      "Bash(npm install *)",
+      "Bash(xargs grep -l \"wa\\\\.me\\\\|whatsapp\\\\.me\")"
+    ]
+  }
+}
