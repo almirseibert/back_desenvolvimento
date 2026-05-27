@@ -151,12 +151,28 @@ async function initClient() {
             if (from.endsWith('@lid')) {
                 try {
                     const contact = await msg.getContact();
-                    if (contact?.id?._serialized) {
-                        from = contact.id._serialized;
-                        console.log(`[CHATBOT] @lid resolvido: ${msg.from} → ${from}`);
+                    const resolved = contact?.id?._serialized;
+                    if (resolved && !resolved.endsWith('@lid')) {
+                        from = resolved;
+                        console.log(`[CHATBOT] @lid resolvido via contact: ${msg.from} → ${from}`);
+                    } else if (contact?.number) {
+                        from = `${contact.number}@c.us`;
+                        console.log(`[CHATBOT] @lid resolvido via number: ${msg.from} → ${from}`);
+                    } else {
+                        // Fallback: tenta pelo chat
+                        const chat = await msg.getChat();
+                        const chatResolved = chat?.id?._serialized;
+                        if (chatResolved && !chatResolved.endsWith('@lid')) {
+                            from = chatResolved;
+                            console.log(`[CHATBOT] @lid resolvido via chat: ${msg.from} → ${from}`);
+                        } else {
+                            console.warn(`[CHATBOT] Não foi possível resolver @lid ${msg.from} — mensagem ignorada.`);
+                            return;
+                        }
                     }
                 } catch (e) {
                     console.warn('[CHATBOT] Não foi possível resolver @lid:', e.message);
+                    return;
                 }
             }
             let mediaBase64 = null, mediaMimetype = null;
@@ -249,8 +265,28 @@ app.post('/send', async (req, res) => {
     const { number, message, documentUrl } = req.body;
 
     try {
-        // Suporta @lid e @c.us — usa o sufixo original se já vier com @
-        const chatId = number.includes('@') ? number : `${number}@c.us`;
+        // Suporta @c.us — usa o sufixo original se já vier com @
+        let chatId = number.includes('@') ? number : `${number}@c.us`;
+
+        // @lid não pode ser usado no sendMessage — tenta resolver para @c.us
+        if (chatId.endsWith('@lid')) {
+            try {
+                const contact = await client.getContactById(chatId);
+                const resolved = contact?.id?._serialized;
+                if (resolved && !resolved.endsWith('@lid')) {
+                    console.log(`[SEND] @lid resolvido: ${chatId} → ${resolved}`);
+                    chatId = resolved;
+                } else if (contact?.number) {
+                    chatId = `${contact.number}@c.us`;
+                    console.log(`[SEND] @lid resolvido via number: ${number} → ${chatId}`);
+                } else {
+                    return res.status(400).json({ error: `Identificador @lid não pôde ser resolvido para um número válido.` });
+                }
+            } catch (lidErr) {
+                console.warn(`⚠️ Não foi possível resolver @lid ${chatId}:`, lidErr.message);
+                return res.status(400).json({ error: `Não foi possível resolver o identificador @lid para envio.` });
+            }
+        }
 
         // Verifica se o número está cadastrado no WhatsApp antes de enviar
         try {
