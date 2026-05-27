@@ -241,8 +241,24 @@ app.post('/send', async (req, res) => {
         // Suporta @c.us — usa o sufixo original se já vier com @
         let chatId = number.includes('@') ? number : `${number}@c.us`;
 
-        // @lid: usa diretamente — sendMessage suporta LID nativo
-        if (!chatId.endsWith('@lid')) {
+        // Para @lid: usa enforceLidAndPnRetrieval para registrar o mapeamento localmente
+        // e obter o WID do telefone, que o sendMessage consegue usar corretamente
+        if (chatId.endsWith('@lid')) {
+            try {
+                const phoneWid = await client.pupPage.evaluate(async (lid) => {
+                    const result = await window.WWebJS.enforceLidAndPnRetrieval(lid);
+                    return result?.phone?._serialized || null;
+                }, chatId);
+                if (phoneWid) {
+                    console.log(`[SEND] LID resolvido para telefone: ${chatId} → ${phoneWid}`);
+                    chatId = phoneWid;
+                } else {
+                    console.warn(`[SEND] Não foi possível resolver LID ${chatId} para telefone — tentando enviar ao LID diretamente.`);
+                }
+            } catch (lidErr) {
+                console.warn(`[SEND] Erro ao resolver LID ${chatId}:`, lidErr.message);
+            }
+        } else {
             try {
                 const plainNumber = number.replace(/\D/g, '');
                 const resolved = await client.getNumberId(plainNumber);
