@@ -269,36 +269,19 @@ app.post('/send', async (req, res) => {
         // Suporta @c.us — usa o sufixo original se já vier com @
         let chatId = number.includes('@') ? number : `${number}@c.us`;
 
-        // @lid não pode ser usado no sendMessage — tenta resolver para @c.us
-        if (chatId.endsWith('@lid')) {
-            try {
-                const contact = await client.getContactById(chatId);
-                const resolved = contact?.id?._serialized;
-                if (resolved && !resolved.endsWith('@lid')) {
-                    console.log(`[SEND] @lid resolvido: ${chatId} → ${resolved}`);
-                    chatId = resolved;
-                } else if (contact?.number) {
-                    chatId = `${contact.number}@c.us`;
-                    console.log(`[SEND] @lid resolvido via number: ${number} → ${chatId}`);
-                } else {
-                    return res.status(400).json({ error: `Identificador @lid não pôde ser resolvido para um número válido.` });
-                }
-            } catch (lidErr) {
-                console.warn(`⚠️ Não foi possível resolver @lid ${chatId}:`, lidErr.message);
-                return res.status(400).json({ error: `Não foi possível resolver o identificador @lid para envio.` });
-            }
-        }
-
-        // Verifica se o número está cadastrado no WhatsApp antes de enviar
+        // Resolve o ID correto via getNumberId (lida com @c.us e @lid transparentemente)
         try {
-            const isRegistered = await client.isRegisteredUser(chatId);
-            if (!isRegistered) {
-                console.warn(`⚠️ Número ${chatId} não está registrado no WhatsApp.`);
+            const plainNumber = number.replace(/\D/g, '');
+            const resolved = await client.getNumberId(plainNumber);
+            if (resolved) {
+                chatId = resolved._serialized;
+                console.log(`[SEND] ID resolvido: ${plainNumber} → ${chatId}`);
+            } else {
+                console.warn(`⚠️ Número ${plainNumber} não encontrado no WhatsApp.`);
                 return res.status(400).json({ error: `Número ${number} não possui conta no WhatsApp.` });
             }
-        } catch (checkErr) {
-            // Não bloqueia o envio se a verificação falhar
-            console.warn('⚠️ Não foi possível verificar registro do número:', checkErr.message);
+        } catch (resolveErr) {
+            console.warn('⚠️ Não foi possível resolver ID do número, tentando com @c.us:', resolveErr.message);
         }
 
         const resp = await client.sendMessage(chatId, message);
