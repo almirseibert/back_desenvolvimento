@@ -146,8 +146,22 @@ async function initClient() {
         if (!BACKEND_URL) return;
 
         try {
-            // Passa o from original (incluindo @lid) — o backend preserva para o envio de resposta
+            // Passa o from original (incluindo @lid) — o backend usa para enviar a resposta
             const from = msg.from;
+
+            // Resolve o número de telefone real do contato para identificação no banco
+            let phoneNumber = null;
+            try {
+                const contact = await msg.getContact();
+                if (contact?.number) {
+                    phoneNumber = contact.number;
+                } else if (!from.endsWith('@lid')) {
+                    phoneNumber = from.replace(/@\S+$/, '');
+                }
+            } catch (_) {
+                if (!from.endsWith('@lid')) phoneNumber = from.replace(/@\S+$/, '');
+            }
+
             let mediaBase64 = null, mediaMimetype = null;
 
             if (msg.hasMedia) {
@@ -192,6 +206,7 @@ async function initClient() {
                 },
                 body: JSON.stringify({
                     from,
+                    phoneNumber,
                     body:          msg.body || '',
                     hasMedia:      msg.hasMedia,
                     mediaBase64,

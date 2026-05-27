@@ -14,11 +14,12 @@ const receberMensagem = async (req, res) => {
     // Responder imediatamente — o microsserviço não precisa aguardar
     res.status(200).json({ ok: true });
 
-    const { from, body, hasMedia, mediaBase64, mediaMimetype } = req.body || {};
+    const { from, phoneNumber, body, hasMedia, mediaBase64, mediaMimetype } = req.body || {};
     if (!from) return;
 
     chatbotService.processarMensagem({
         from,
+        phoneNumber:   phoneNumber   || null,
         body:          (body || '').trim(),
         hasMedia:      !!hasMedia,
         mediaBase64:   mediaBase64  || null,

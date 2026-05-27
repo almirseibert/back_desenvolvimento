@@ -1057,7 +1057,7 @@ async function handleConfirmacao(session, from, body) {
 
 // ─── MAIN ENTRY POINT ─────────────────────────────────────────────────────────
 
-async function processarMensagem({ from, body, hasMedia, mediaBase64, mediaMimetype }) {
+async function processarMensagem({ from, phoneNumber, body, hasMedia, mediaBase64, mediaMimetype }) {
     // item 19: rate limiting
     if (isRateLimited(from)) {
         console.warn('[CHATBOT] Rate limit atingido para', maskPhone(from));
@@ -1070,13 +1070,13 @@ async function processarMensagem({ from, body, hasMedia, mediaBase64, mediaMimet
     }
     processingPhones.add(from);
     try {
-        await _processarMensagem({ from, body, hasMedia, mediaBase64, mediaMimetype });
+        await _processarMensagem({ from, phoneNumber, body, hasMedia, mediaBase64, mediaMimetype });
     } finally {
         processingPhones.delete(from);
     }
 }
 
-async function _processarMensagem({ from, body, hasMedia, mediaBase64, mediaMimetype }) {
+async function _processarMensagem({ from, phoneNumber, body, hasMedia, mediaBase64, mediaMimetype }) {
     const bodyLower = body.toLowerCase().trim();
     // item 24: mascara telefone em logs
     console.log(`[CHATBOT] Msg de ${maskPhone(from)}: "${body.substring(0, 60)}" | hasMedia:${hasMedia}`);
@@ -1109,7 +1109,7 @@ async function _processarMensagem({ from, body, hasMedia, mediaBase64, mediaMime
         console.log(`[CHATBOT] isStart=${isStart} para ${maskPhone(from)}`);
         if (!isStart && !hasMedia) return;
 
-        const funcionario = await identificarFuncionario(from);
+        const funcionario = await identificarFuncionario(phoneNumber || from);
         console.log(`[CHATBOT] Funcionário:`, funcionario ? funcionario.nome : 'não encontrado');
         if (!funcionario) {
             await responder(from,
