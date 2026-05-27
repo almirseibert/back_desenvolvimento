@@ -432,6 +432,21 @@ async function buscarVeiculosAtivos() {
     return veiculos;
 }
 
+// Busca direta por RE/frota sem depender do LIMIT 25
+async function buscarVeiculoPorRE(input) {
+    const semRE = input.trim().replace(/^RE\s*/i, '').replace(/[\s\-.]/g, '');
+    if (!semRE) return null;
+    const [rows] = await db.query(
+        `SELECT id, placa, registroInterno, modelo, tipo
+         FROM vehicles
+         WHERE status IN ('Ativo', 'Disponível', 'Em Obra')
+           AND REPLACE(REPLACE(REPLACE(UPPER(registroInterno), 'RE', ''), ' ', ''), '-', '') = ?
+         LIMIT 1`,
+        [semRE.toUpperCase()]
+    );
+    return rows[0] || null;
+}
+
 // ─── MENU DISPLAY FUNCTIONS ───────────────────────────────────────────────────
 
 async function exibirMenuVeiculo(session, from) {
@@ -674,6 +689,15 @@ async function handleVeiculo(session, from, body) {
 
     // Correspondência direta por placa ou RE (item 3 já aplicado em matchVeiculoDireto)
     let veiculoId = matchVeiculoDireto(body, veiculos);
+
+    // Busca direta no banco para RE que não esteja nos 25 da lista
+    if (!veiculoId && /^RE\s*\d/i.test(body.trim())) {
+        const vDireto = await buscarVeiculoPorRE(body);
+        if (vDireto) {
+            veiculoId = vDireto.id;
+            if (!veiculos.find(v => v.id === vDireto.id)) veiculos.push(vDireto);
+        }
+    }
 
     // Match por número da lista
     if (!veiculoId) {
