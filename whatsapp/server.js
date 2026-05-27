@@ -147,30 +147,16 @@ async function initClient() {
         try {
             let from = msg.from;
 
-            // @lid é um identificador interno do WhatsApp — resolve para o número @c.us real
+            // @lid é um identificador interno do WhatsApp — resolve para o número real
             if (from.endsWith('@lid')) {
                 try {
                     const contact = await msg.getContact();
-                    const resolved = contact?.id?._serialized;
-
-                    if (resolved && !resolved.endsWith('@lid')) {
-                        // Conseguiu resolver para @c.us ou outro sufixo válido
-                        from = resolved;
-                        console.log(`[CHATBOT] @lid resolvido via contact.id: ${msg.from} → ${from}`);
-                    } else if (contact?.number) {
-                        // contact.number retorna o número limpo (sem sufixo)
-                        from = contact.number + '@c.us';
-                        console.log(`[CHATBOT] @lid resolvido via contact.number: ${msg.from} → ${from}`);
-                    } else {
-                        // Fallback: substitui @lid por @c.us (o número geralmente é igual)
-                        from = from.replace('@lid', '@c.us');
-                        console.log(`[CHATBOT] @lid → @c.us (fallback): ${msg.from} → ${from}`);
+                    if (contact?.id?._serialized) {
+                        from = contact.id._serialized;
+                        console.log(`[CHATBOT] @lid resolvido: ${msg.from} → ${from}`);
                     }
                 } catch (e) {
                     console.warn('[CHATBOT] Não foi possível resolver @lid:', e.message);
-                    // Fallback seguro: converte @lid para @c.us
-                    from = from.replace('@lid', '@c.us');
-                    console.log(`[CHATBOT] @lid → @c.us (fallback erro): ${msg.from} → ${from}`);
                 }
             }
             let mediaBase64 = null, mediaMimetype = null;
@@ -263,11 +249,19 @@ app.post('/send', async (req, res) => {
     const { number, message, documentUrl } = req.body;
 
     try {
-        // Usa o sufixo original se já vier com @, mas @lid não é suportado pelo sendMessage
-        let chatId = number.includes('@') ? number : `${number}@c.us`;
-        if (chatId.endsWith('@lid')) {
-            chatId = chatId.replace('@lid', '@c.us');
-            console.log(`[SEND] @lid convertido para @c.us: ${chatId}`);
+        // Suporta @lid e @c.us — usa o sufixo original se já vier com @
+        const chatId = number.includes('@') ? number : `${number}@c.us`;
+
+        // Verifica se o número está cadastrado no WhatsApp antes de enviar
+        try {
+            const isRegistered = await client.isRegisteredUser(chatId);
+            if (!isRegistered) {
+                console.warn(`⚠️ Número ${chatId} não está registrado no WhatsApp.`);
+                return res.status(400).json({ error: `Número ${number} não possui conta no WhatsApp.` });
+            }
+        } catch (checkErr) {
+            // Não bloqueia o envio se a verificação falhar
+            console.warn('⚠️ Não foi possível verificar registro do número:', checkErr.message);
         }
 
         const resp = await client.sendMessage(chatId, message);
@@ -287,8 +281,25 @@ app.post('/send', async (req, res) => {
         res.json({ success: true, messageId });
 
     } catch (err) {
-        console.error('❌ Erro ao enviar mensagem:', err.message);
-        res.status(500).json({ error: err.message });
+        // whatsapp-web.js pode lançar valores não-padrão (strings minificadas como "t", "e", etc.)
+        let errMsg;
+        if (err instanceof Error) {
+            errMsg = err.message;
+        } else if (typeof err === 'string') {
+            errMsg = err;
+        } else {
+            try { errMsg = JSON.stringify(err); } catch (_) { errMsg = String(err); }
+        }
+
+        // Se o erro é uma única letra, provavelmente é um erro minificado do WA Web
+        if (errMsg && errMsg.length <= 2) {
+            console.error(`❌ Erro ao enviar mensagem (código WA minificado "${errMsg}"):`, err);
+            errMsg = `Erro interno do WhatsApp Web (código: "${errMsg}"). Verifique se o número existe e o cliente está estável.`;
+        } else {
+            console.error('❌ Erro ao enviar mensagem:', err);
+        }
+
+        res.status(500).json({ error: errMsg || 'Erro desconhecido ao enviar mensagem.' });
     }
 });
 
