@@ -18,9 +18,9 @@ const CONTATOS_INTERNOS = {
 function formatarNumero(numero) {
     if (!numero) return null;
     const str = String(numero);
-    // Preserva sufixo WhatsApp (@c.us, @lid, etc.) para que o envio chegue ao JID correto
+    // Preserva @c.us para JID direto, mas descarta @lid (identificador interno — o microsserviço resolve)
     const suffixMatch = str.match(/(@\S+)$/);
-    const suffix = suffixMatch ? suffixMatch[1] : null;
+    const suffix = (suffixMatch && suffixMatch[1] !== '@lid') ? suffixMatch[1] : null;
     let limpo = str.replace(/\D/g, '');
     if (!limpo) return null;
     let formatted;
