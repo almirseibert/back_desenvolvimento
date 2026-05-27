@@ -1000,35 +1000,14 @@ async function handleConfirmacao(session, from, body) {
     }
 
     if (bl.includes('confirm') || bl === 'sim' || bl === 's' || bl === '1') {
-        // item 25: marca como processando — evita duplo envio
-        const [marcou] = await db.query(
-            `UPDATE whatsapp_chatbot_sessions SET step = 'processando', last_activity = NOW()
-             WHERE id = ? AND step = 'confirmacao'`,
-            [session.id]
-        );
-        if (!marcou.affectedRows) {
-            await responder(from, `⏳ Sua solicitação já está sendo processada. Aguarde.`);
-            return;
-        }
-
-        const [rows] = await db.query(`SELECT * FROM whatsapp_chatbot_sessions WHERE id = ?`, [session.id]);
-        if (!rows.length) {
-            await responder(from, `❌ Sessão expirada. Envie *oi* para iniciar uma nova solicitação.`);
-            return;
-        }
-        const full = rows[0];
-        if (typeof full.session_data === 'string') {
-            try { full.session_data = JSON.parse(full.session_data); } catch (_) { full.session_data = {}; }
-        }
-
         try {
-            const result = await criarSolicitacaoDB(full);
+            const result = await criarSolicitacaoDB(session);
             if (result.error) {
                 await responder(from, `⚠️ Não foi possível criar a solicitação:\n${result.error}\n\nEnvie *oi* para tentar novamente.`);
                 await cancelSession(session.id);
                 return;
             }
-            await updateSession(session.id, 'concluido', full.session_data);
+            await updateSession(session.id, 'concluido', session.session_data);
             await responder(from,
                 `🎉 *Solicitação #${result.id} criada com sucesso!*\n\n` +
                 `Sua solicitação foi enviada para análise.\n` +
@@ -1037,8 +1016,6 @@ async function handleConfirmacao(session, from, body) {
             );
         } catch (err) {
             console.error('[CHATBOT] Erro ao criar solicitação:', err);
-            // item 25: reverte para confirmacao para que o usuário possa tentar novamente
-            await updateSession(session.id, 'confirmacao', full.session_data);
             await responder(from, `❌ Erro ao salvar a solicitação. Tente novamente ou contate o gestor.`);
         }
 
@@ -1094,12 +1071,6 @@ async function _processarMensagem({ from, phoneNumber, body, hasMedia, mediaBase
 
     if (session && (BACK_KEYWORDS.has(bodyLower) || bodyLower === '0')) {
         await handleVoltar(session, from);
-        return;
-    }
-
-    // Sessão em processando: aguardar
-    if (session?.step === 'processando') {
-        await responder(from, `⏳ Sua solicitação está sendo processada. Aguarde um momento.`);
         return;
     }
 
