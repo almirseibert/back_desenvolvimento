@@ -432,17 +432,21 @@ async function buscarVeiculosAtivos() {
     return veiculos;
 }
 
-// Busca direta por RE/frota sem depender do LIMIT 25
-async function buscarVeiculoPorRE(input) {
-    const semRE = input.trim().replace(/^RE\s*/i, '').replace(/[\s\-.]/g, '');
-    if (!semRE) return null;
+// Busca direta por placa ou RE/frota sem depender do LIMIT 25
+async function buscarVeiculoPorPlacaOuRE(input) {
+    const limpo = input.trim().toUpperCase().replace(/[\s\-.]/g, '');
+    const semRE = input.trim().replace(/^RE\s*/i, '').replace(/[\s\-.]/g, '').toUpperCase();
+    if (!limpo) return null;
     const [rows] = await db.query(
         `SELECT id, placa, registroInterno, modelo, tipo
          FROM vehicles
          WHERE status IN ('Ativo', 'Disponível', 'Em Obra')
-           AND REPLACE(REPLACE(REPLACE(UPPER(registroInterno), 'RE', ''), ' ', ''), '-', '') = ?
+           AND (
+             REPLACE(REPLACE(UPPER(placa), ' ', ''), '-', '') = ?
+             OR REPLACE(REPLACE(REPLACE(UPPER(registroInterno), 'RE', ''), ' ', ''), '-', '') = ?
+           )
          LIMIT 1`,
-        [semRE.toUpperCase()]
+        [limpo, semRE || limpo]
     );
     return rows[0] || null;
 }
@@ -690,9 +694,9 @@ async function handleVeiculo(session, from, body) {
     // Correspondência direta por placa ou RE (item 3 já aplicado em matchVeiculoDireto)
     let veiculoId = matchVeiculoDireto(body, veiculos);
 
-    // Busca direta no banco para RE que não esteja nos 25 da lista
-    if (!veiculoId && /^RE\s*\d/i.test(body.trim())) {
-        const vDireto = await buscarVeiculoPorRE(body);
+    // Busca direta no banco para placa ou RE que não esteja nos 25 da lista
+    if (!veiculoId) {
+        const vDireto = await buscarVeiculoPorPlacaOuRE(body);
         if (vDireto) {
             veiculoId = vDireto.id;
             if (!veiculos.find(v => v.id === vDireto.id)) veiculos.push(vDireto);
