@@ -28,12 +28,16 @@ const db = mysql.createPool({
     enableKeepAlive: true,
     keepAliveInitialDelay: 0,
     connectTimeout: 30000,
+    timezone: '-03:00',
 });
 
 (async () => {
     try {
+        const conn = await db.getConnection();
+        await conn.query("SET time_zone = '-03:00'");
+        conn.release();
         const [[{ bancoConectado }]] = await db.query('SELECT DATABASE() AS bancoConectado');
-        console.log(`✅ Banco de dados conectado: ${bancoConectado} (${process.env.DB_HOST})`);
+        console.log(`✅ Banco de dados conectado: ${bancoConectado} (${process.env.DB_HOST}) | timezone: -03:00`);
     } catch (err) {
         console.error('❌ Erro ao verificar conexão com o banco:', err.message);
     }
