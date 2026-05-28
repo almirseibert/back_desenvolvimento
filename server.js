@@ -14,6 +14,7 @@ const http = require('http');
     const migrations = [
         { table: 'users',                  column: 'tentativas_falhas_abastecimento', def: 'INT DEFAULT 0' },
         { table: 'users',                  column: 'bloqueado_abastecimento',         def: 'TINYINT(1) DEFAULT 0' },
+        { table: 'users',                  column: 'page_permissions',                def: 'JSON DEFAULT NULL' },
         { table: 'comboio_transactions',   column: 'authNumber',                      def: 'INT UNSIGNED DEFAULT NULL' },
     ];
 
