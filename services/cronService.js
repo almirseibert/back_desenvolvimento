@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const db = require('../database');
 const whatsappService = require('./whatsappService');
+const { syncJourneyEvents, syncPositions, syncDailySummary } = require('./sigasulSyncService');
 
 // ===================================================================================
 // ⚙️ CONFIGURAÇÃO DE HORÁRIO DA ROTINA DIÁRIA (Fuso de Brasília GMT-3)
@@ -440,8 +441,26 @@ cron.schedule('* * * * *', async () => {
                 }
             }
         }
+        // ====================================================================
+        // 4. SYNC INCREMENTAL SIGA SUL (jornadas, a cada minuto)
+        // ====================================================================
+        try {
+            await syncJourneyEvents();
+        } catch (e) { console.error('❌ [CRON] Erro syncJourneyEvents:', e.message); }
+
     } catch (error) {
         console.error('❌ [CRON] Erro crítico no Tick do Cron:', error);
+    }
+});
+
+// ====================================================================
+// CRON DIÁRIO — Sync de posições GPS Siga Sul (02:05 GMT-3)
+// ====================================================================
+cron.schedule('5 5 * * *', async () => {
+    try {
+        await syncPositions();
+    } catch (e) {
+        console.error('❌ [CRON] Erro syncPositions:', e.message);
     }
 });
 
@@ -470,9 +489,14 @@ cron.schedule('0 2 * * 0', () => {
 });
 
 // ====================================================================
-// CRON DIÁRIO — Rotação de logs WhatsApp (mantém só os últimos 6 meses)
+// CRON DIÁRIO — Sync resumo diário Siga Sul + Rotação de logs WhatsApp
 // ====================================================================
 cron.schedule('0 3 * * *', async () => {
+    try {
+        await syncDailySummary();
+    } catch (e) {
+        console.error('❌ [CRON] Erro syncDailySummary:', e.message);
+    }
     try {
         await db.query(`DELETE FROM whatsapp_logs WHERE data_envio < DATE_SUB(NOW(), INTERVAL 6 MONTH)`);
     } catch (e) {
