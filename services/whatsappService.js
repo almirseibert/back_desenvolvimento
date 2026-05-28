@@ -18,7 +18,7 @@ const CONTATOS_INTERNOS = {
 function formatarNumero(numero) {
     if (!numero) return null;
     const str = String(numero);
-    // Preserva sufixo WhatsApp (@c.us, @lid, etc.) para que o envio chegue ao JID correto
+    // Preserva sufixos WhatsApp (@c.us, @lid) para roteamento correto no microsserviço
     const suffixMatch = str.match(/(@\S+)$/);
     const suffix = suffixMatch ? suffixMatch[1] : null;
     let limpo = str.replace(/\D/g, '');
@@ -90,8 +90,17 @@ const whatsappService = {
             return data;
 
         } catch (error) {
-            const erroReal = error.response?.data?.error || error.message;
-            console.error('❌ Erro no envio WhatsApp:', erroReal);
+            // Extrai a mensagem real: resposta HTTP do microsserviço → mensagem do axios
+            const erroReal = error.response?.data?.error ?? error.response?.data ?? error.message ?? String(error);
+
+            // Log detalhado para facilitar diagnóstico (especialmente erros minificados do WA Web)
+            console.error('❌ Erro no envio WhatsApp:', {
+                numero:       numeroFormatado,
+                httpStatus:   error.response?.status,
+                responseData: error.response?.data,
+                axiosMsg:     error.message,
+                axiosCode:    error.code,
+            });
 
             try {
                 await db.query(
@@ -102,7 +111,9 @@ const whatsappService = {
                 );
             } catch (_) {}
 
-            throw new Error(JSON.stringify(erroReal));
+            // Converte para string sem double-encoding (antes era JSON.stringify, que transformava "t" em '"t"')
+            const msgErro = typeof erroReal === 'string' ? erroReal : JSON.stringify(erroReal);
+            throw new Error(msgErro);
         }
     },
 

@@ -6,7 +6,7 @@
 CREATE TABLE IF NOT EXISTS `whatsapp_chatbot_sessions` (
     `id`               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     `phone_number`     VARCHAR(30)  NOT NULL,
-    `employee_id`      INT UNSIGNED NULL,
+    `employee_id`      VARCHAR(36)  NULL,
     `employee_name`    VARCHAR(150) NULL,
     `step`             VARCHAR(30)  NOT NULL DEFAULT 'veiculo',
     `session_data`     JSON         NULL,
