@@ -83,6 +83,33 @@ setInterval(() => {
     );
 }, POSITIONS_BG_INTERVAL_MS);
 
+// Remove traço/espaço e coloca maiúsculo — normaliza "ABC-1A23" e "ABC1A23" para o mesmo valor
+const normPlaca = (p) => (p || '').replace(/[-\s]/g, '').toUpperCase();
+
+// Enriquece posições com o campo `veiculo_tipo` vindo do cadastro local de veículos.
+// O cruzamento usa placa normalizada para tolerar diferenças de formatação entre o cadastro e a API.
+const enrichWithVehicleTipo = async (positions) => {
+    if (!Array.isArray(positions) || positions.length === 0) return positions;
+    try {
+        const [vehicles] = await db.query('SELECT placa, tipo FROM vehicles');
+        const tipoMap = {};
+        for (const v of vehicles) tipoMap[normPlaca(v.placa)] = v.tipo;
+
+        // Diagnóstico: loga as primeiras placas de cada lado para verificar cruzamento
+        const apiSample  = positions.slice(0, 5).map(p => ({ raw: p.pos_placa, norm: normPlaca(p.pos_placa) }));
+        const dbSample   = vehicles.slice(0, 5).map(v => ({ raw: v.placa, norm: normPlaca(v.placa) }));
+        const matched    = positions.filter(p => tipoMap[normPlaca(p.pos_placa)]).length;
+        console.log(`🔍 [SigaSul] enrichVehicleTipo: ${vehicles.length} veículos no banco, ${positions.length} posições da API, ${matched} cruzados`);
+        console.log('   API (amostra):', JSON.stringify(apiSample));
+        console.log('   DB  (amostra):', JSON.stringify(dbSample));
+
+        return positions.map(p => ({ ...p, veiculo_tipo: tipoMap[normPlaca(p.pos_placa)] ?? null }));
+    } catch (e) {
+        console.warn('⚠️ [SigaSul] Não foi possível enriquecer tipo de veículo:', e.message);
+        return positions;
+    }
+};
+
 // ── GET /api/sigasul/positions ─────────────────────────────────────────────────
 const getPositions = async (req, res) => {
     try {
@@ -90,19 +117,20 @@ const getPositions = async (req, res) => {
         const cacheAge  = Date.now() - positionsCache.fetchedAt;
         const cacheOk   = positionsCache.data !== null && cacheAge < POSITIONS_CACHE_TTL_MS;
 
+        let data;
         if (!force && cacheOk) {
             res.setHeader('X-Cache', 'HIT');
             res.setHeader('X-Cache-Age', Math.floor(cacheAge / 1000) + 's');
-            return res.json(positionsCache.data);
+            data = positionsCache.data;
+        } else {
+            data = await fetchAndCachePositions();
+            res.setHeader('X-Cache', 'MISS');
         }
 
-        const data = await fetchAndCachePositions();
-        res.setHeader('X-Cache', 'MISS');
-        res.json(data);
+        res.json(await enrichWithVehicleTipo(data));
     } catch (e) {
         console.error('❌ SigaSul getPositions:', e.message);
-        // Se tiver cache antigo, devolve ele em vez de erro
-        if (positionsCache.data) return res.json(positionsCache.data);
+        if (positionsCache.data) return res.json(await enrichWithVehicleTipo(positionsCache.data).catch(() => positionsCache.data));
         res.status(502).json({ message: e.message });
     }
 };
