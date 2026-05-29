@@ -238,7 +238,7 @@ async function claudeMatchVeiculo(input, veiculos) {
     if (!veiculos.length) return null;
     try {
         const lista = veiculos.map((v, i) =>
-            `#${i + 1} | Placa:${v.placa} | RE/Frota:${v.registroInterno || '-'} | Modelo:${v.modelo || '-'} | Tipo:${v.tipo || '-'}`
+            `#${i + 1} | Placa:${v.placa} | RE/Frota:${v.registroInterno || '-'} | Modelo:${v.modelo || '-'} | Grupo:${v.tipo || '-'}`
         ).join('\n');
         const response = await anthropic.messages.create({
             model:      'claude-haiku-4-5-20251001',

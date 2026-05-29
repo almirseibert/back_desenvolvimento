@@ -29,7 +29,7 @@ const create = async (req, res) => {
                 sub_tipo || null,
                 media_consumo_padrao != null ? parseFloat(media_consumo_padrao) : null,
                 percentual_tolerancia_padrao != null ? parseFloat(percentual_tolerancia_padrao) : 20.00,
-                unidade || 'L/hr',
+                unidade || 'L/h',
             ]
         );
         req.io.emit('server:sync', { targets: ['vehicleTypeConfigs'] });
@@ -59,7 +59,7 @@ const update = async (req, res) => {
                 sub_tipo || null,
                 media_consumo_padrao != null ? parseFloat(media_consumo_padrao) : null,
                 percentual_tolerancia_padrao != null ? parseFloat(percentual_tolerancia_padrao) : 20.00,
-                unidade || 'L/hr',
+                unidade || 'L/h',
                 id,
             ]
         );

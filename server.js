@@ -146,15 +146,101 @@ const http = require('http');
                 sub_tipo        VARCHAR(100)   DEFAULT NULL,
                 media_consumo_padrao      DECIMAL(10,3)  DEFAULT NULL,
                 percentual_tolerancia_padrao  DECIMAL(5,2)   DEFAULT 20.00,
-                unidade         ENUM('L/hr','L/100km') NOT NULL DEFAULT 'L/hr',
+                unidade         ENUM('L/h','h/L','Km/L','L/Km') NOT NULL DEFAULT 'L/h',
                 created_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
                 updated_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY uk_tipo_subtipo (tipo, sub_tipo)
             )
         `);
+        // Tabelas antigas: amplia o ENUM (L/hr,L/100km -> 4 unidades) e converte valores legados.
+        try {
+            await db.query(`ALTER TABLE vehicle_type_configs
+                MODIFY COLUMN unidade ENUM('L/h','h/L','Km/L','L/Km','L/hr','L/100km') NOT NULL DEFAULT 'L/h'`);
+            await db.query(`UPDATE vehicle_type_configs SET unidade = 'L/h'  WHERE unidade = 'L/hr'`);
+            await db.query(`UPDATE vehicle_type_configs SET unidade = 'Km/L' WHERE unidade = 'L/100km'`);
+            await db.query(`ALTER TABLE vehicle_type_configs
+                MODIFY COLUMN unidade ENUM('L/h','h/L','Km/L','L/Km') NOT NULL DEFAULT 'L/h'`);
+        } catch (e2) {
+            console.warn('⚠️ [migration] ajuste ENUM unidade:', e2.message);
+        }
         console.log('✅ Migração vehicle_type_configs concluída.');
     } catch (e) {
         console.warn('⚠️ [migration] vehicle_type_configs:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Taxonomia de Veículos (grupos → tipos → sub-tipos)
+// Com seed idempotente a partir de utils/vehicleRules (fallback hardcoded)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS vehicle_groups (
+                id          VARCHAR(36)  PRIMARY KEY,
+                nome        VARCHAR(100) NOT NULL UNIQUE,
+                unidade     ENUM('L/h','h/L','Km/L','L/Km') NOT NULL DEFAULT 'L/h',
+                ordem       INT          DEFAULT 0,
+                created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        `);
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS vehicle_types (
+                id          VARCHAR(36)  PRIMARY KEY,
+                group_id    VARCHAR(36)  NOT NULL,
+                nome        VARCHAR(100) NOT NULL,
+                created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_group_nome (group_id, nome),
+                CONSTRAINT fk_vt_group FOREIGN KEY (group_id) REFERENCES vehicle_groups(id) ON DELETE CASCADE
+            )
+        `);
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS vehicle_sub_types (
+                id          VARCHAR(36)  PRIMARY KEY,
+                type_id     VARCHAR(36)  NOT NULL,
+                nome        VARCHAR(100) NOT NULL,
+                created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_type_nome (type_id, nome),
+                CONSTRAINT fk_vst_type FOREIGN KEY (type_id) REFERENCES vehicle_types(id) ON DELETE CASCADE
+            )
+        `);
+
+        // Seed apenas quando vazio (não sobrescreve edições do admin)
+        const [[{ total }]] = await db.query('SELECT COUNT(*) AS total FROM vehicle_groups');
+        if (total === 0) {
+            const { randomUUID } = require('crypto');
+            const { vehicleGroups, vehicleSubTypes } = require('./utils/vehicleRules');
+            const groupNames = Object.keys(vehicleGroups);
+            let ordem = 0;
+            for (const grupo of groupNames) {
+                const unidade = (grupo === 'Veículos Leves' || grupo === 'Caminhões de Trecho') ? 'Km/L' : 'L/h';
+                const groupId = randomUUID();
+                await db.query(
+                    'INSERT INTO vehicle_groups (id, nome, unidade, ordem) VALUES (?, ?, ?, ?)',
+                    [groupId, grupo, unidade, ordem++]
+                );
+                for (const tipo of vehicleGroups[grupo]) {
+                    const typeId = randomUUID();
+                    await db.query(
+                        'INSERT INTO vehicle_types (id, group_id, nome) VALUES (?, ?, ?)',
+                        [typeId, groupId, tipo]
+                    );
+                    for (const sub of (vehicleSubTypes[tipo] || [])) {
+                        await db.query(
+                            'INSERT INTO vehicle_sub_types (id, type_id, nome) VALUES (?, ?, ?)',
+                            [randomUUID(), typeId, sub]
+                        );
+                    }
+                }
+            }
+            console.log('🌱 Seed de taxonomia de veículos populado.');
+        }
+        console.log('✅ Migração taxonomia de veículos concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] taxonomia de veículos:', e.message);
     }
 })();
 
@@ -319,6 +405,7 @@ const inventoryRoutes = require('./routes/inventoryRoutes');
 const whatsappRoutes = require('./routes/whatsappRoutes');
 const sigasulRoutes = require('./routes/sigasulRoutes');
 const vehicleTypeConfigRoutes = require('./routes/vehicleTypeConfigRoutes');
+const vehicleTaxonomyRoutes = require('./routes/vehicleTaxonomyRoutes');
 
 // ====================================================================
 // CONFIGURAÇÃO DO HTTP SERVER E SOCKET.IO
@@ -432,6 +519,7 @@ apiRouter.use('/inventory', inventoryRoutes);
 apiRouter.use('/whatsapp', whatsappRoutes);
 apiRouter.use('/sigasul', sigasulRoutes);
 apiRouter.use('/vehicle-type-configs', vehicleTypeConfigRoutes);
+apiRouter.use('/vehicle-taxonomy', vehicleTaxonomyRoutes);
 
 // ─── WEBHOOK PÚBLICO DO CHATBOT ─────────────────────────────────────────────
 // Deve ficar ANTES de app.use('/api', apiRouter) para não passar pelo authMiddleware
