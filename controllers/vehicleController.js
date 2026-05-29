@@ -105,7 +105,7 @@ const createVehicle = async (req, res) => {
 
 // Whitelist de colunas permitidas em UPDATE — evita SQL injection por nome de campo
 const ALLOWED_VEHICLE_FIELDS = new Set([
-    'placa', 'registroInterno', 'tipo', 'marca', 'modelo', 'anoFabricacao', 'anoCombustivel',
+    'placa', 'registroInterno', 'tipo', 'sub_tipo', 'marca', 'modelo', 'anoFabricacao', 'anoCombustivel',
     'status', 'localizacaoAtual', 'obraAtualId', 'fotoURL', 'cor', 'renavam', 'chassi',
     'proprietario', 'seguradora', 'apolice', 'vencimentoSeguro', 'vencimentoCRLV',
     'vencimentoLicenca', 'vencimentoExtintor', 'vencimentoTacografo',
@@ -113,6 +113,7 @@ const ALLOWED_VEHICLE_FIELDS = new Set([
     'odometro', 'horimetro', 'hodometro', 'capacidadeTanque', 'tipoCombustivel',
     'observacoes', 'proximaRevisaoOdometro', 'proximaRevisaoHorimetro', 'proximaRevisaoData',
     'tamanho', 'capacidadeCarga', 'numeroPneus', 'numeroEixos',
+    'media_consumo', 'percentual_tolerancia',
 ]);
 
 const updateVehicle = async (req, res) => {

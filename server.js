@@ -18,6 +18,10 @@ const http = require('http');
         { table: 'users',                  column: 'page_permissions',                def: 'JSON DEFAULT NULL' },
         { table: 'comboio_transactions',   column: 'authNumber',                      def: 'INT UNSIGNED DEFAULT NULL' },
         { table: 'obras',                  column: 'tipo_registro',                   def: "ENUM('obra','centro_custo') DEFAULT 'obra'" },
+        // FASE 0.4 — Sub-tipos e médias de consumo
+        { table: 'vehicles',               column: 'sub_tipo',                        def: 'VARCHAR(100) DEFAULT NULL' },
+        { table: 'vehicles',               column: 'media_consumo',                   def: 'DECIMAL(10,3) DEFAULT NULL' },
+        { table: 'vehicles',               column: 'percentual_tolerancia',           def: 'DECIMAL(5,2) DEFAULT 20.00' },
     ];
 
     for (const { table, column, def } of migrations) {
@@ -127,6 +131,30 @@ const http = require('http');
         console.log('✅ Migração Siga Sul concluída.');
     } catch (e) {
         console.warn('⚠️ [migration] Siga Sul:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Tabela de Configuração de Tipos/Sub-tipos de Veículos
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS vehicle_type_configs (
+                id              VARCHAR(36)    PRIMARY KEY,
+                tipo            VARCHAR(100)   NOT NULL,
+                sub_tipo        VARCHAR(100)   DEFAULT NULL,
+                media_consumo_padrao      DECIMAL(10,3)  DEFAULT NULL,
+                percentual_tolerancia_padrao  DECIMAL(5,2)   DEFAULT 20.00,
+                unidade         ENUM('L/hr','L/100km') NOT NULL DEFAULT 'L/hr',
+                created_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_tipo_subtipo (tipo, sub_tipo)
+            )
+        `);
+        console.log('✅ Migração vehicle_type_configs concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] vehicle_type_configs:', e.message);
     }
 })();
 
@@ -290,6 +318,7 @@ const washingRoutes = require('./routes/washingRoutes');
 const inventoryRoutes = require('./routes/inventoryRoutes');
 const whatsappRoutes = require('./routes/whatsappRoutes');
 const sigasulRoutes = require('./routes/sigasulRoutes');
+const vehicleTypeConfigRoutes = require('./routes/vehicleTypeConfigRoutes');
 
 // ====================================================================
 // CONFIGURAÇÃO DO HTTP SERVER E SOCKET.IO
@@ -402,6 +431,7 @@ apiRouter.use('/agenda', agendaRoutes);
 apiRouter.use('/inventory', inventoryRoutes);
 apiRouter.use('/whatsapp', whatsappRoutes);
 apiRouter.use('/sigasul', sigasulRoutes);
+apiRouter.use('/vehicle-type-configs', vehicleTypeConfigRoutes);
 
 // ─── WEBHOOK PÚBLICO DO CHATBOT ─────────────────────────────────────────────
 // Deve ficar ANTES de app.use('/api', apiRouter) para não passar pelo authMiddleware

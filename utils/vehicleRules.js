@@ -34,6 +34,23 @@ const vehicleGroups = {
     ],
 };
 
+// Sub-tipos por tipo principal (select condicional no modal de veículo)
+const vehicleSubTypes = {
+    'Caçamba': [
+        'Caminhão Caçamba Basculante 7m³', 'Caminhão Caçamba Basculante 10m³',
+        'Caminhão Caçamba Basculante 12m³', 'Caminhão Caçamba Basculante 14m³',
+        'Caminhão Caçamba Basculante 16m³', 'Caminhão Caçamba Basculante 20m³',
+    ],
+    'Escavadeira': [
+        'Escavadeira Hidráulica 13T', 'Escavadeira Hidráulica 15T',
+        'Escavadeira Hidráulica 23T', 'Escavadeira Hidráulica 26T',
+        'Escavadeira Hidráulica 35T', 'Escavadeira Hidráulica 36T',
+        'Escavadeira Hidráulica + Rompedor', 'Escavadeira Hidráulica Longo Alcance',
+    ],
+    'Pá Carregadeira': ['Pá Carregadeira 11T', 'Pá Carregadeira 20T'],
+    'Trator Esteira':  ['Trator Esteira 21T', 'Trator Esteira 36T'],
+};
+
 const extraObraOptions = ['Administração', 'Oficina', 'Pátio', 'Rampa', 'Diversos'];
 const operationalSubGroups = ['Administrativo', 'Oficina', 'Operacional', 'Supervisor'];
 
@@ -252,6 +269,7 @@ const checkVehicleRestrictions = (vehicle, revisions = []) => {
 // =============================================================================
 module.exports = {
     vehicleGroups,
+    vehicleSubTypes,
     extraObraOptions,
     operationalSubGroups,
     equipmentTypesForHours,
