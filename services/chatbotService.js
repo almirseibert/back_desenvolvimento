@@ -549,12 +549,31 @@ async function exibirMenuCombustivel(session, from) {
 async function exibirMenuLeitura(session, from) {
     const usaHorimetro = session.session_data?.usa_horimetro;
     const tipoLabel    = usaHorimetro ? 'Horímetro (horas)' : 'Odômetro (km)';
-    const exemplo      = usaHorimetro ? '1250' : '98450';
+    const unidade      = usaHorimetro ? 'h' : 'km';
+    const campo        = usaHorimetro ? 'horimetro_informado' : 'odometro_informado';
+
+    let ultimaLeituraMsg = '';
+    try {
+        const [rows] = await db.query(
+            `SELECT ${campo} AS ultima FROM solicitacoes_abastecimento
+             WHERE veiculo_id = ? AND ${campo} IS NOT NULL AND status NOT IN ('CANCELADO')
+             ORDER BY data_solicitacao DESC, id DESC LIMIT 1`,
+            [session.session_data?.veiculo_id]
+        );
+        if (rows.length && rows[0].ultima !== null) {
+            const ultima = parseFloat(rows[0].ultima).toLocaleString('pt-BR');
+            ultimaLeituraMsg = `\nÚltima leitura registrada: *${ultima} ${unidade}*\n`;
+        }
+    } catch (e) {
+        console.error('[CHATBOT] Erro ao buscar última leitura:', e.message);
+    }
+
     await responder(from,
         `✅ Combustível: *${session.session_data?.tipo_combustivel || ''}*\n\n` +
         `*Passo 5/7 — ${tipoLabel}*\n` +
-        `Qual a leitura atual do *${tipoLabel.toLowerCase()}* do veículo?\n\n` +
-        `Digite apenas o número (ex: *${exemplo}*)\n\n` +
+        `Qual a leitura atual do *${tipoLabel.toLowerCase()}* do veículo?\n` +
+        `${ultimaLeituraMsg}\n` +
+        `Digite apenas o número:\n\n` +
         `0️⃣ *Voltar*`
     );
 }
@@ -873,38 +892,17 @@ async function handleCombustivel(session, from, body) {
 }
 
 async function handleLeitura(session, from, body) {
-    // Leitura pendente (menor que histórico) aguardando confirmação do usuário
-    if (session.session_data?.leitura_pendente_menor) {
-        const bl = body.toLowerCase().trim();
-        if (bl === 'sim' || bl === 's' || bl === '1') {
-            const leitura      = session.session_data.leitura_pendente;
-            const usaHorimetro = session.session_data.usa_horimetro;
-            const campoSalvo   = usaHorimetro ? 'horimetro' : 'odometro';
-            const d = { ...session.session_data, [campoSalvo]: leitura };
-            delete d.leitura_pendente; delete d.leitura_pendente_menor;
-            await updateSession(session.id, 'litragem', d);
-            await exibirMenuLitragem({ ...session, step: 'litragem', session_data: d }, from);
-        } else {
-            const d = { ...session.session_data };
-            delete d.leitura_pendente; delete d.leitura_pendente_menor;
-            await updateSession(session.id, 'leitura', d);
-            await exibirMenuLeitura({ ...session, step: 'leitura', session_data: d }, from);
-        }
-        return;
-    }
-
     const usaHorimetro = session.session_data.usa_horimetro;
     const leitura      = await claudeExtrairLeitura(body, usaHorimetro);
 
     if (leitura === null) {
-        const ex = usaHorimetro ? '1250' : '98450';
         await responder(from,
-            `❌ Não entendi o valor "*${body}*".\n\nDigite apenas o número (ex: *${ex}*)\n\n0️⃣ *Voltar*`
+            `❌ Não entendi o valor "*${body}*".\n\nDigite apenas o número (ex: *12345*)\n\n0️⃣ *Voltar*`
         );
         return;
     }
 
-    // item 15: valida contra última leitura registrada
+    // Valida contra última leitura registrada (bloqueia inferior e salto excessivo)
     const campoHistorico = usaHorimetro ? 'horimetro_informado' : 'odometro_informado';
     try {
         const [lastRows] = await db.query(
@@ -914,15 +912,22 @@ async function handleLeitura(session, from, body) {
             [session.session_data.veiculo_id]
         );
         if (lastRows.length && lastRows[0].ultima !== null) {
-            const ultima  = parseFloat(lastRows[0].ultima);
-            const unidade = usaHorimetro ? 'h' : 'km';
+            const ultima   = parseFloat(lastRows[0].ultima);
+            const unidade  = usaHorimetro ? 'h' : 'km';
+            const deltaMax = usaHorimetro ? 50 : 1000;
+
             if (leitura < ultima) {
                 await responder(from,
-                    `⚠️ O valor *${leitura} ${unidade}* é menor que a última leitura registrada (*${ultima.toLocaleString('pt-BR')} ${unidade}*).\n\n` +
-                    `Confirma mesmo assim? Digite *sim* para continuar ou corrija o valor.`
+                    `❌ O valor *${leitura} ${unidade}* é *menor* que a última leitura registrada (*${ultima.toLocaleString('pt-BR')} ${unidade}*).\n\n` +
+                    `Verifique e informe um valor correto.\n\n0️⃣ *Voltar*`
                 );
-                const d = { ...session.session_data, leitura_pendente: leitura, leitura_pendente_menor: true };
-                await updateSession(session.id, 'leitura', d);
+                return;
+            }
+            if ((leitura - ultima) > deltaMax) {
+                await responder(from,
+                    `❌ O valor *${leitura} ${unidade}* representa um salto excessivo em relação à última leitura (*${ultima.toLocaleString('pt-BR')} ${unidade}*).\n\n` +
+                    `Verifique e informe um valor correto.\n\n0️⃣ *Voltar*`
+                );
                 return;
             }
         }

@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
+const whatsappService = require('../services/whatsappService');
 
 // --- CONFIGURAÇÃO MULTER E LIMPEZA (Copiado de refuelingController) ---
 
@@ -146,6 +147,33 @@ const avaliarSolicitacao = async (req, res) => {
             );
             await connection.commit();
             if (req.io) req.io.emit('server:sync', { targets: ['solicitacoes'] });
+
+            // Notifica solicitante via WhatsApp
+            try {
+                const [userRows] = await db.query(
+                    `SELECT u.name, wcs.phone_number
+                     FROM users u
+                     JOIN whatsapp_chatbot_sessions wcs ON wcs.employee_id = u.employeeId
+                     WHERE u.id = ?
+                     ORDER BY wcs.last_activity DESC
+                     LIMIT 1`,
+                    [sol.usuario_id]
+                );
+                const solicitante = userRows[0];
+                if (solicitante?.phone_number) {
+                    const veiculo = sol.veiculo_placa || `ID ${sol.veiculo_id}`;
+                    const motivo  = motivoNegativa ? `\n\n*Motivo:* ${motivoNegativa}` : '';
+                    await whatsappService.enviarMensagem(
+                        solicitante.phone_number,
+                        solicitante.name,
+                        'negativa_solicitacao',
+                        `❌ *Solicitação de Abastecimento Negada*\n\nSua solicitação para o veículo *${veiculo}* foi *negada*.${motivo}\n\nEm caso de dúvidas, entre em contato com o responsável.`
+                    );
+                }
+            } catch (e) {
+                console.error('[SOLICITACAO] Erro ao notificar negativa via WhatsApp:', e.message);
+            }
+
             return res.json({ message: 'Solicitação negada.' });
         }
 
