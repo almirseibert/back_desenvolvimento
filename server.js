@@ -18,10 +18,15 @@ const http = require('http');
         { table: 'users',                  column: 'page_permissions',                def: 'JSON DEFAULT NULL' },
         { table: 'comboio_transactions',   column: 'authNumber',                      def: 'INT UNSIGNED DEFAULT NULL' },
         { table: 'obras',                  column: 'tipo_registro',                   def: "ENUM('obra','centro_custo') DEFAULT 'obra'" },
+        // FASE 1.3 — Campos adicionais em obras
+        { table: 'obras',                  column: 'orgao_contratante',               def: "VARCHAR(50) DEFAULT NULL" },
+        { table: 'obras',                  column: 'regiao',                          def: "ENUM('Lajeado','Santa Maria') DEFAULT NULL" },
         // FASE 0.4 — Sub-tipos e médias de consumo
         { table: 'vehicles',               column: 'sub_tipo',                        def: 'VARCHAR(100) DEFAULT NULL' },
         { table: 'vehicles',               column: 'media_consumo',                   def: 'DECIMAL(10,3) DEFAULT NULL' },
         { table: 'vehicles',               column: 'percentual_tolerancia',           def: 'DECIMAL(5,2) DEFAULT 20.00' },
+        // FASE 2.4 — Toxicológico
+        { table: 'employees',              column: 'exameToxicologicoVencimento',      def: 'DATE DEFAULT NULL' },
     ];
 
     for (const { table, column, def } of migrations) {
@@ -241,6 +246,35 @@ const http = require('http');
         console.log('✅ Migração taxonomia de veículos concluída.');
     } catch (e) {
         console.warn('⚠️ [migration] taxonomia de veículos:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Fase 1.2: Tabela de médias de consumo de combustível
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS vehicle_fuel_averages (
+                id                VARCHAR(36)    PRIMARY KEY,
+                vehicle_id        VARCHAR(36)    NOT NULL,
+                vehicle_tipo      VARCHAR(100),
+                vehicle_sub_tipo  VARCHAR(100),
+                last_refueling_id VARCHAR(36),
+                avg_last_1        DECIMAL(10,3)  DEFAULT NULL,
+                avg_last_2        DECIMAL(10,3)  DEFAULT NULL,
+                avg_last_3        DECIMAL(10,3)  DEFAULT NULL,
+                avg_by_tipo       DECIMAL(10,3)  DEFAULT NULL,
+                avg_by_subtipo    DECIMAL(10,3)  DEFAULT NULL,
+                updated_at        TIMESTAMP      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_vehicle (vehicle_id),
+                INDEX idx_tipo    (vehicle_tipo),
+                FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
+            )
+        `);
+        console.log('✅ Migração vehicle_fuel_averages concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] vehicle_fuel_averages:', e.message);
     }
 })();
 

@@ -2,6 +2,7 @@
 const db = require('../database');
 const { createOrUpdateWeeklyFuelExpense } = require('./expenseController');
 const crypto = require('crypto');
+const { updateVehicleReading } = require('../utils/updateVehicleReading');
 
 // --- HELPERS DE SANITIZAÇÃO ---
 const sanitize = (value) => (value === undefined || value === 'undefined' || value === '' ? null : value);
@@ -159,29 +160,17 @@ const manageSaidaExpense = async ({ connection, obraId, date, fuelType, valueCha
     }
 };
 
-// --- HELPER: Atualizar Odômetro/Horímetro do Veículo ---
-const updateVehicleReading = async (connection, vehicleId, readings) => {
+// --- HELPER: Atualizar Odômetro/Horímetro do Veículo (usando utility compartilhada) ---
+const updateVehicleReadingLocal = async (connection, vehicleId, readings) => {
     if (!vehicleId) return;
-    
-    const { odometro, horimetro } = readings;
-    
-    const valOdo = sanitizeNumber(odometro);
-    const valHor = sanitizeNumber(horimetro);
+    const [[vRow]] = await connection.execute('SELECT tipo FROM vehicles WHERE id = ?', [vehicleId]);
+    if (!vRow) return;
 
-    const updateData = {};
-
-    if (valOdo !== null && valOdo > 0) {
-        updateData.odometro = valOdo;
-    }
-
-    if (valHor !== null && valHor > 0) {
-        updateData.horimetro = valHor;
-        // Correção: Removidos horimetroDigital e Analogico pois não existem mais e quebravam o SQL
-    }
-
-    if (Object.keys(updateData).length > 0) {
-        const setClause = Object.keys(updateData).map(k => `${k} = ?`).join(', ');
-        await connection.execute(`UPDATE vehicles SET ${setClause} WHERE id = ?`, [...Object.values(updateData), vehicleId]);
+    const valOdo = sanitizeNumber(readings.odometro);
+    const valHor = sanitizeNumber(readings.horimetro);
+    const readingVal = (valOdo && valOdo > 0) ? valOdo : (valHor && valHor > 0 ? valHor : null);
+    if (readingVal) {
+        await updateVehicleReading(connection, vehicleId, vRow.tipo, readingVal, 'auto');
     }
 };
 
@@ -421,7 +410,7 @@ const createSaidaTransaction = async (req, res) => {
             [`$.${fuelType}`, `$.${fuelType}`, safeLiters, comboioVehicleId]
         );
         
-        await updateVehicleReading(connection, receivingVehicleId, {
+        await updateVehicleReadingLocal(connection, receivingVehicleId, {
             odometro: transactionData.odometro,
             horimetro: transactionData.horimetro
         });
@@ -624,7 +613,7 @@ const updateTransaction = async (req, res) => {
             });
 
             if (newData.odometro || newData.horimetro) {
-                await updateVehicleReading(connection, newData.receivingVehicleId || oldData.receivingVehicleId, {
+                await updateVehicleReadingLocal(connection, newData.receivingVehicleId || oldData.receivingVehicleId, {
                     odometro: newData.odometro,
                     horimetro: newData.horimetro
                 });

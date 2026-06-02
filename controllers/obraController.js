@@ -1,5 +1,6 @@
 const db = require('../database');
 const { v4: uuidv4 } = require('uuid');
+const { updateVehicleReading } = require('../utils/updateVehicleReading');
 
 // ===================================================================================
 // FUNÇÃO AUXILIAR DE PARSE SEGURO
@@ -321,8 +322,21 @@ const updateObraHistoryEntry = async (req, res) => {
             historyId
         ]);
 
-        // 5. PROPAGAÇÃO DE MUDANÇAS (Sincronização)
-        
+        // 5. Propaga leitura máxima (entrada ou saída) para vehicles
+        {
+            const [[vRow]] = await connection.execute('SELECT tipo FROM vehicles WHERE id = ?', [veiculoId]);
+            if (vRow) {
+                const maxOdo = Math.max(odometroEntrada || 0, odometroSaida || 0);
+                const maxHor = Math.max(horimetroEntrada || 0, horimetroSaida || 0);
+                const readingVal = maxOdo > 0 ? maxOdo : (maxHor > 0 ? maxHor : null);
+                if (readingVal) {
+                    await updateVehicleReading(connection, veiculoId, vRow.tipo, readingVal, 'auto');
+                }
+            }
+        }
+
+        // 6. PROPAGAÇÃO DE MUDANÇAS (Sincronização)
+
         // Verifica se é uma alocação ATIVA (sem data de saída)
         const isActiveAllocation = (!dataSaida && !currentEntry.dataSaida);
 

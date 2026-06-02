@@ -23,4 +23,10 @@ router.delete('/:id', refuelingController.deleteRefuelingOrder);
 // Rota para confirmar um abastecimento em aberto
 router.put('/:id/confirm', refuelingController.confirmRefuelingOrder);
 
+// Rota para liberar ordem bloqueada (admin)
+router.put('/:id/liberar', refuelingController.liberarOrdemBloqueada);
+
+// Rota para negar (excluir) ordem bloqueada (admin)
+router.delete('/:id/negar', refuelingController.negarOrdemBloqueada);
+
 module.exports = router;

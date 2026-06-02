@@ -1,6 +1,8 @@
 // controllers/refuelingController.js
 const db = require('../database');
 const crypto = require('crypto');
+const { updateVehicleReading } = require('../utils/updateVehicleReading');
+const { recalcFuelAverage } = require('../utils/recalcFuelAverage');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
@@ -241,6 +243,61 @@ const getRefuelingById = async (req, res) => {
     }
 };
 
+const checkLeituraBloqueada = async (connection, vehicleId, odometro, horimetro) => {
+    if (!vehicleId) return null;
+    try {
+        const [[v]] = await connection.execute(
+            'SELECT tipo, odometro AS odoAtual, horimetro AS horiAtual FROM vehicles WHERE id = ?',
+            [vehicleId]
+        );
+        if (!v) return null;
+
+        const ODO_MAX_JUMP = 1000;
+        const HORI_MAX_JUMP = 50;
+
+        const odo = odometro != null ? parseFloat(odometro) : NaN;
+        const hori = horimetro != null ? parseFloat(horimetro) : NaN;
+        const odoAtual = parseFloat(v.odoAtual || 0);
+        const horiAtual = parseFloat(v.horiAtual || 0);
+
+        if (!isNaN(odo) && odoAtual > 0) {
+            if (odo < odoAtual)
+                return `Odômetro informado (${odo} Km) é inferior ao atual do veículo (${odoAtual} Km).`;
+            if (odo - odoAtual > ODO_MAX_JUMP)
+                return `Salto de odômetro excessivo: ${odo - odoAtual} Km (máx. ${ODO_MAX_JUMP} Km).`;
+        }
+        if (!isNaN(hori) && horiAtual > 0) {
+            if (hori < horiAtual)
+                return `Horímetro informado (${hori} Hr) é inferior ao atual do veículo (${horiAtual} Hr).`;
+            if (hori - horiAtual > HORI_MAX_JUMP)
+                return `Salto de horímetro excessivo: ${hori - horiAtual} Hr (máx. ${HORI_MAX_JUMP} Hr).`;
+        }
+        return null;
+    } catch {
+        return null;
+    }
+};
+
+const checkOrcamentoBloqueado = async (connection, obraId) => {
+    if (!obraId || obraId === 'Patio') return false;
+    try {
+        const [[obraRow]] = await connection.execute(
+            'SELECT valorContrato FROM obras WHERE id = ?', [obraId]
+        );
+        if (!obraRow || !obraRow.valorContrato || parseFloat(obraRow.valorContrato) <= 0) return false;
+
+        const [[expRow]] = await connection.execute(
+            'SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE obraId = ? AND category = "Combustível"',
+            [obraId]
+        );
+        const totalGasto = parseFloat(expRow.total || 0);
+        const limite = parseFloat(obraRow.valorContrato) * 0.20;
+        return totalGasto >= limite;
+    } catch {
+        return false;
+    }
+};
+
 const createRefuelingOrder = async (req, res) => {
     const data = req.body;
     const connection = await db.getConnection();
@@ -270,6 +327,17 @@ const createRefuelingOrder = async (req, res) => {
             createdByData.linkedSolicitacaoId = data.solicitacaoId;
         }
 
+        const motivoLeitura = await checkLeituraBloqueada(
+            connection, data.vehicleId,
+            data.odometro != null ? parseFloat(data.odometro) : null,
+            data.horimetro != null ? parseFloat(data.horimetro) : null
+        );
+        const bloqueadoOrcamento = !motivoLeitura && await checkOrcamentoBloqueado(connection, data.obraId);
+
+        let initialStatus = data.status || 'Aberta';
+        if (motivoLeitura) initialStatus = 'BloqueadoLeitura';
+        else if (bloqueadoOrcamento) initialStatus = 'BloqueadoOrcamento';
+
         const refuelingData = {
             id: id,
             authNumber: newAuthNumber,
@@ -277,10 +345,10 @@ const createRefuelingOrder = async (req, res) => {
             partnerId: data.partnerId,
             partnerName: finalPartnerName || null,
             employeeId: data.employeeId || null,
-            obraId: data.obraId || null, 
+            obraId: data.obraId || null,
             fuelType: data.fuelType || null,
             data: dataAbastecimento,
-            status: data.status || 'Aberta',
+            status: initialStatus,
             isFillUp: data.isFillUp ? 1 : 0,
             needsArla: data.needsArla ? 1 : 0,
             isFillUpArla: data.isFillUpArla ? 1 : 0,
@@ -293,7 +361,9 @@ const createRefuelingOrder = async (req, res) => {
             outros: data.outros || null,
             createdBy: JSON.stringify(createdByData),
             confirmedBy: data.confirmedBy ? JSON.stringify(data.confirmedBy) : null,
-            editedBy: data.editedBy ? JSON.stringify(data.editedBy) : null,
+            editedBy: motivoLeitura
+                ? JSON.stringify({ motivoBloqueio: motivoLeitura })
+                : (data.editedBy ? JSON.stringify(data.editedBy) : null),
             invoiceNumber: data.invoiceNumber || null
         };
 
@@ -312,21 +382,13 @@ const createRefuelingOrder = async (req, res) => {
             );
         }
 
-        const vehicleUpdate = {};
-        const newOdometro = safeNum(data.odometro);
-        const newHorimetro = safeNum(data.horimetro);
-
-        if (newOdometro > 0) vehicleUpdate.odometro = newOdometro;
-        if (newHorimetro > 0) {
-            vehicleUpdate.horimetro = newHorimetro;
-        }
-
-        if (Object.keys(vehicleUpdate).length > 0) {
-            const vFields = Object.keys(vehicleUpdate).map(k => `${k} = ?`).join(', ');
-            await connection.execute(
-                `UPDATE vehicles SET ${vFields} WHERE id = ?`, 
-                [...Object.values(vehicleUpdate), data.vehicleId]
-            );
+        // Busca tipo do veículo para aplicar regra odômetro/horímetro
+        const [[vehicleRow]] = await connection.execute('SELECT tipo FROM vehicles WHERE id = ?', [data.vehicleId]);
+        if (vehicleRow) {
+            const readingVal = safeNum(data.odometro) || safeNum(data.horimetro);
+            if (readingVal) {
+                await updateVehicleReading(connection, data.vehicleId, vehicleRow.tipo, readingVal, 'auto');
+            }
         }
 
         if (refuelingData.status === 'Concluída' && refuelingData.obraId && refuelingData.partnerId && refuelingData.fuelType) {
@@ -334,8 +396,23 @@ const createRefuelingOrder = async (req, res) => {
         }
 
         await connection.commit();
-        req.io.emit('server:sync', { targets: ['refuelings', 'vehicles', 'expenses', 'solicitacoes'] }); 
-        res.status(201).json({ id: id, message: 'Ordem emitida.', authNumber: newAuthNumber });
+        req.io.emit('server:sync', { targets: ['refuelings', 'vehicles', 'expenses', 'solicitacoes'] });
+
+        let mensagemRetorno = 'Ordem emitida.';
+        if (motivoLeitura) {
+            mensagemRetorno = `Ordem Nº ${newAuthNumber} salva com bloqueio de leitura: ${motivoLeitura} Aguarde liberação do Administrador ou corrija os dados.`;
+        } else if (bloqueadoOrcamento) {
+            mensagemRetorno = `Ordem Nº ${newAuthNumber} salva, mas bloqueada por orçamento (≥20% do contrato). Aguarde liberação do Administrador.`;
+        }
+
+        res.status(201).json({
+            id,
+            authNumber: newAuthNumber,
+            bloqueadoOrcamento: !!bloqueadoOrcamento,
+            bloqueadoLeitura: !!motivoLeitura,
+            motivoBloqueioLeitura: motivoLeitura || null,
+            message: mensagemRetorno
+        });
     } catch (error) {
         await connection.rollback();
         console.error('Erro CREATE:', error);
@@ -408,16 +485,12 @@ const updateRefuelingOrder = async (req, res) => {
             await connection.execute(`UPDATE refuelings SET ${setClause} WHERE id = ?`, [...Object.values(updateData), id]);
         }
 
-        const vehicleUpdate = {};
-        if (updateData.odometro > 0) vehicleUpdate.odometro = updateData.odometro;
-        if (updateData.horimetro > 0) {
-            vehicleUpdate.horimetro = updateData.horimetro;
-        }
-        
-        if (Object.keys(vehicleUpdate).length > 0) {
-             const vFields = Object.keys(vehicleUpdate).map(k => `${k} = ?`).join(', ');
-             const vId = oldRefueling.vehicleId;
-             await connection.execute(`UPDATE vehicles SET ${vFields} WHERE id = ?`, [...Object.values(vehicleUpdate), vId]);
+        const readingValUpdate = (updateData.odometro > 0 ? updateData.odometro : null) || (updateData.horimetro > 0 ? updateData.horimetro : null);
+        if (readingValUpdate) {
+            const [[vRow]] = await connection.execute('SELECT tipo FROM vehicles WHERE id = ?', [oldRefueling.vehicleId]);
+            if (vRow) {
+                await updateVehicleReading(connection, oldRefueling.vehicleId, vRow.tipo, readingValUpdate, 'auto');
+            }
         }
 
         const currentObra = updateData.obraId || oldRefueling.obraId;
@@ -488,30 +561,14 @@ const confirmRefuelingOrder = async (req, res) => {
             }
         }
 
-        const [vehicles] = await connection.execute('SELECT * FROM vehicles WHERE id = ?', [order.vehicleId]);
-        const vehicle = vehicles[0];
-        
+        const [[vehicle]] = await connection.execute('SELECT tipo FROM vehicles WHERE id = ?', [order.vehicleId]);
+
         const vehicleUpdate = {};
         const readingVal = safeNum(confirmedReading);
 
-        if (readingVal) {
-            // Lógica mais robusta para garantir que Leves/Caminhões de Trecho usem Odômetro,
-            // espelhando as regras do Frontend (vehicleRules.js).
-            const isLeveOrTrecho = [
-                'Automóvel', 'Camionete', 'Utilitários', 'Moto', 
-                'Caminhão Prancha', 'Semirreboques'
-            ].includes(vehicle.tipo);
-
-            if (isLeveOrTrecho) {
-                 vehicleUpdate.odometro = readingVal;
-            } else {
-                 vehicleUpdate.horimetro = readingVal;
-            }
-        }
-
-        if (Object.keys(vehicleUpdate).length > 0) {
-            const vFields = Object.keys(vehicleUpdate).map(k => `${k} = ?`).join(', ');
-            await connection.execute(`UPDATE vehicles SET ${vFields} WHERE id = ?`, [...Object.values(vehicleUpdate), order.vehicleId]);
+        if (readingVal && vehicle) {
+            const updatedField = await updateVehicleReading(connection, order.vehicleId, vehicle.tipo, readingVal, 'auto');
+            if (updatedField) vehicleUpdate[updatedField] = readingVal;
         }
 
         const safePrice = safeNum(pricePerLiter, true);
@@ -558,6 +615,13 @@ const confirmRefuelingOrder = async (req, res) => {
 
         if (order.obraId && order.partnerId && order.fuelType) {
             await updateMonthlyExpense(connection, order.obraId, order.partnerId, order.fuelType, order.data);
+        }
+
+        // Recalcula médias de consumo após confirmar abastecimento
+        try {
+            await recalcFuelAverage(connection, order.vehicleId);
+        } catch (e) {
+            console.warn('[recalcFuelAverage] Falha ao recalcular média:', e.message);
         }
 
         await connection.commit();
@@ -620,6 +684,44 @@ const deleteRefuelingOrder = async (req, res) => {
     }
 };
 
+const negarOrdemBloqueada = async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [[ordem]] = await db.execute('SELECT id, status FROM refuelings WHERE id = ?', [id]);
+        if (!ordem) return res.status(404).json({ error: 'Ordem não encontrada.' });
+        if (!['BloqueadoOrcamento', 'BloqueadoLeitura'].includes(ordem.status)) {
+            return res.status(400).json({ error: 'Ordem não está bloqueada.' });
+        }
+        await db.execute('DELETE FROM refuelings WHERE id = ?', [id]);
+        req.io.emit('server:sync', { targets: ['refuelings'] });
+        res.json({ message: 'Ordem negada e excluída.' });
+    } catch (error) {
+        console.error('Erro ao negar ordem:', error);
+        res.status(500).json({ error: 'Erro ao negar ordem.' });
+    }
+};
+
+const liberarOrdemBloqueada = async (req, res) => {
+    const { id } = req.params;
+    const liberadoPor = req.body.liberadoPor || req.user || null;
+    try {
+        const [[ordem]] = await db.execute('SELECT id, status FROM refuelings WHERE id = ?', [id]);
+        if (!ordem) return res.status(404).json({ error: 'Ordem não encontrada.' });
+        if (!['BloqueadoOrcamento', 'BloqueadoLeitura'].includes(ordem.status)) {
+            return res.status(400).json({ error: 'Ordem não está bloqueada.' });
+        }
+        await db.execute(
+            'UPDATE refuelings SET status = "Aberta", editedBy = ? WHERE id = ?',
+            [JSON.stringify({ acao: 'liberacao_orcamento', por: liberadoPor }), id]
+        );
+        req.io.emit('server:sync', { targets: ['refuelings'] });
+        res.json({ message: 'Ordem liberada com sucesso.' });
+    } catch (error) {
+        console.error('Erro ao liberar ordem:', error);
+        res.status(500).json({ error: 'Erro ao liberar ordem.' });
+    }
+};
+
 module.exports = {
     getAllRefuelings,
     getRefuelingById,
@@ -627,7 +729,9 @@ module.exports = {
     updateRefuelingOrder,
     confirmRefuelingOrder,
     deleteRefuelingOrder,
-    upload,          
+    liberarOrdemBloqueada,
+    negarOrdemBloqueada,
+    upload,
     uploadOrderPdf,
-    sendOrderEmail 
+    sendOrderEmail
 };
