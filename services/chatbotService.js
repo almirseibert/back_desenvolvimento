@@ -113,7 +113,6 @@ async function getSession(phone) {
 
 async function createSession(phone, employeeId, employeeName) {
     const sessionData = JSON.stringify({ employee_uuid: employeeId });
-    // item 8: persiste employee_id em vez de NULL
     const [result] = await db.query(
         `INSERT INTO whatsapp_chatbot_sessions (phone_number, employee_name, step, session_data)
          VALUES (?, ?, 'veiculo', ?)`,

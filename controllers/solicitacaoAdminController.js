@@ -131,7 +131,13 @@ const avaliarSolicitacao = async (req, res) => {
     await connection.beginTransaction();
 
     try {
-        const [solicitacao] = await connection.execute('SELECT * FROM solicitacoes_abastecimento WHERE id = ? FOR UPDATE', [id]);
+        const [solicitacao] = await connection.execute(
+            `SELECT s.*, v.placa AS veiculo_placa, v.registroInterno AS veiculo_re
+             FROM solicitacoes_abastecimento s
+             LEFT JOIN vehicles v ON v.id = s.veiculo_id
+             WHERE s.id = ? FOR UPDATE`,
+            [id]
+        );
         if (!solicitacao.length) {
             await connection.rollback();
             return res.status(404).json({ error: 'Solicitação não encontrada' });
@@ -153,7 +159,8 @@ const avaliarSolicitacao = async (req, res) => {
                 const [userRows] = await db.query(
                     `SELECT u.name, wcs.phone_number
                      FROM users u
-                     JOIN whatsapp_chatbot_sessions wcs ON wcs.employee_id = u.employeeId
+                     JOIN whatsapp_chatbot_sessions wcs
+                       ON JSON_UNQUOTE(JSON_EXTRACT(wcs.session_data, '$.employee_uuid')) = u.employeeId
                      WHERE u.id = ?
                      ORDER BY wcs.last_activity DESC
                      LIMIT 1`,
@@ -161,7 +168,8 @@ const avaliarSolicitacao = async (req, res) => {
                 );
                 const solicitante = userRows[0];
                 if (solicitante?.phone_number) {
-                    const veiculo = sol.veiculo_placa || `ID ${sol.veiculo_id}`;
+                    const partes = [sol.veiculo_re && `RE ${sol.veiculo_re}`, sol.veiculo_placa].filter(Boolean);
+                    const veiculo = partes.length ? partes.join(' – ') : `ID ${sol.veiculo_id}`;
                     const motivo  = motivoNegativa ? `\n\n*Motivo:* ${motivoNegativa}` : '';
                     await whatsappService.enviarMensagem(
                         solicitante.phone_number,
