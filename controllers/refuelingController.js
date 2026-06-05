@@ -3,10 +3,72 @@ const db = require('../database');
 const crypto = require('crypto');
 const { updateVehicleReading } = require('../utils/updateVehicleReading');
 const { recalcFuelAverage } = require('../utils/recalcFuelAverage');
+const { notifyComboioEntrada } = require('../services/orderNotifier');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
+
+// ─── Auto-envio da ordem ao posto (WhatsApp/E-mail) ─────────────────────────
+// Reusa o orderNotifier (mesmo pipeline da entrada de comboio): gera o PDF
+// uma vez, anexa por e-mail e manda link pelo WhatsApp — respeitando os
+// checkboxes envia_por_whatsapp / envia_por_email do partner. Fire-and-forget.
+const dispatchOrderToPartner = async (refuelingId) => {
+    try {
+        const [[r]] = await db.execute(
+            `SELECT r.id, r.authNumber, r.data, r.partnerId, r.partnerName,
+                    r.fuelType, r.litrosLiberados, r.pricePerLiter, r.invoiceNumber,
+                    r.odometro, r.horimetro, r.createdBy,
+                    v.registroInterno, v.placa, v.marca, v.modelo, v.tipo,
+                    e.nome AS employeeName,
+                    o.nome AS obraName
+             FROM refuelings r
+             LEFT JOIN vehicles  v ON v.id = r.vehicleId
+             LEFT JOIN employees e ON e.id = r.employeeId
+             LEFT JOIN obras     o ON o.id = r.obraId
+             WHERE r.id = ?`, [refuelingId]
+        );
+        if (!r) return;
+
+        const isKm = r.odometro && parseFloat(r.odometro) > 0;
+        const readingLabel = isKm ? 'Odômetro' : (r.horimetro ? 'Horímetro' : 'Leitura');
+        const readingValue = isKm ? `${r.odometro} Km` : (r.horimetro ? `${r.horimetro} h` : 'N/A');
+
+        let issuer = 'Sistema MAK Frotas';
+        try {
+            const cb = typeof r.createdBy === 'string' ? JSON.parse(r.createdBy) : r.createdBy;
+            issuer = cb?.userEmail || cb?.name || cb?.email || issuer;
+        } catch (_) {}
+
+        notifyComboioEntrada({
+            partnerId: r.partnerId,
+            comboioVehicleId: null,
+            order: {
+                tipo: 'abastecimento',
+                authNumber: r.authNumber,
+                date: r.data,
+                fuelType: r.fuelType,
+                liters: r.litrosLiberados,
+                pricePerLiter: r.pricePerLiter,
+                invoiceNumber: r.invoiceNumber,
+                partnerName: r.partnerName,
+                vehicleLabel: `${r.registroInterno || ''} - ${r.placa || ''}`.trim(),
+                vehicleModelo: `${r.marca || ''} ${r.modelo || ''}`.trim(),
+                employeeName: r.employeeName || '',
+                obraName: r.obraName || '',
+                readingLabel,
+                readingValue,
+                issuer,
+            },
+        }).then(result => {
+            console.log(`[orderNotifier] ordem #${r.authNumber}:`, JSON.stringify(result));
+        }).catch(err => {
+            console.warn(`[orderNotifier] ordem #${r.authNumber} falha geral:`, err.message);
+        });
+    } catch (e) {
+        console.warn('[dispatchOrderToPartner] erro:', e.message);
+    }
+};
 
 // --- CONFIGURAÇÃO NODEMAILER (lazy — criado apenas quando necessário) ---
 let _transporter = null;
@@ -398,6 +460,12 @@ const createRefuelingOrder = async (req, res) => {
         await connection.commit();
         req.io.emit('server:sync', { targets: ['refuelings', 'vehicles', 'expenses', 'solicitacoes'] });
 
+        // Dispara envio automático ao posto APENAS se a ordem foi efetivamente liberada.
+        // Bloqueios (leitura/orçamento) aguardam ação do admin — o envio acontece no liberar.
+        if (initialStatus === 'Aberta' || initialStatus === 'Concluída') {
+            dispatchOrderToPartner(id);
+        }
+
         let mensagemRetorno = 'Ordem emitida.';
         if (motivoLeitura) {
             mensagemRetorno = `Ordem Nº ${newAuthNumber} salva com bloqueio de leitura: ${motivoLeitura} Aguarde liberação do Administrador ou corrija os dados.`;
@@ -715,6 +783,8 @@ const liberarOrdemBloqueada = async (req, res) => {
             [JSON.stringify({ acao: 'liberacao_orcamento', por: liberadoPor }), id]
         );
         req.io.emit('server:sync', { targets: ['refuelings'] });
+        // Após o admin liberar, a ordem agora vai ao posto — dispara envio automático
+        dispatchOrderToPartner(id);
         res.json({ message: 'Ordem liberada com sucesso.' });
     } catch (error) {
         console.error('Erro ao liberar ordem:', error);

@@ -27,6 +27,11 @@ const http = require('http');
         { table: 'vehicles',               column: 'percentual_tolerancia',           def: 'DECIMAL(5,2) DEFAULT 20.00' },
         // FASE 2.4 — Toxicológico
         { table: 'employees',              column: 'exameToxicologicoVencimento',      def: 'DATE DEFAULT NULL' },
+        // FASE 2.9 — Canais de envio de ordem para parceiros (posto)
+        { table: 'partners',               column: 'envia_por_whatsapp',               def: 'TINYINT(1) DEFAULT 0' },
+        { table: 'partners',               column: 'envia_por_email',                  def: 'TINYINT(1) DEFAULT 0' },
+        // FASE 2.6 — Histórico de períodos por obra para comboios
+        { table: 'comboio_transactions',   column: 'obra_periodo_id',                  def: 'VARCHAR(36) DEFAULT NULL' },
     ];
 
     for (const { table, column, def } of migrations) {
@@ -51,6 +56,21 @@ const http = require('http');
         await db.query('ALTER TABLE `comboio_transactions` ADD INDEX `idx_authNumber` (`authNumber`)');
     } catch (e) {
         if (e.code !== 'ER_DUP_KEYNAME') console.warn('[migration] idx_authNumber:', e.message);
+    }
+
+    // ───── Expandir ENUM partners.tipo_parceiro para suportar 'comboio' ─────
+    // Causa do erro: "Data truncated for column 'tipo_parceiro' at row 1"
+    // ao distribuir combustível de comboio (qualquer gravação que tentasse
+    // 'comboio' falhava porque o ENUM só tinha 'posto' e 'fornecedor').
+    try {
+        await db.query(`
+            ALTER TABLE \`partners\`
+            MODIFY COLUMN \`tipo_parceiro\` ENUM('posto','fornecedor','comboio') DEFAULT 'posto'
+        `);
+        // Garante que nenhum registro fique com tipo nulo/vazio
+        await db.query(`UPDATE partners SET tipo_parceiro = 'posto' WHERE tipo_parceiro IS NULL OR tipo_parceiro = ''`);
+    } catch (e) {
+        console.warn('[migration] partners.tipo_parceiro ENUM:', e.message);
     }
 
     console.log('✅ Migração de schema concluída.');
@@ -246,6 +266,121 @@ const http = require('http');
         console.log('✅ Migração taxonomia de veículos concluída.');
     } catch (e) {
         console.warn('⚠️ [migration] taxonomia de veículos:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Tabela de períodos por obra dos comboios (Fase 2.6)
+// Toda vez que um comboio é alocado/realocado entre obras, fechamos o
+// período anterior e abrimos um novo. Permite atribuir cada transação
+// do comboio a uma "estadia" específica em uma obra.
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS comboio_periodos_obra (
+                id          VARCHAR(36) PRIMARY KEY,
+                comboio_id  VARCHAR(36) NOT NULL,
+                obra_id     VARCHAR(36) NOT NULL,
+                data_inicio DATETIME    NOT NULL,
+                data_fim    DATETIME    DEFAULT NULL,
+                ativo       TINYINT(1)  DEFAULT 1,
+                created_at  TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_comboio (comboio_id),
+                INDEX idx_obra    (obra_id),
+                INDEX idx_ativo   (ativo)
+            )
+        `);
+
+        // Backfill: para cada veículo-comboio com obraAtualId mas sem período ativo,
+        // abre um período. Idempotente — só faz nada se já existir.
+        const { ensureOpenComboioPeriod } = require('./utils/comboioPeriodo');
+        const [comboios] = await db.query(
+            "SELECT id, obraAtualId FROM vehicles WHERE isComboioVehicle = 1 AND obraAtualId IS NOT NULL"
+        );
+        let opened = 0;
+        for (const c of comboios) {
+            const result = await ensureOpenComboioPeriod(db, c.id, c.obraAtualId);
+            if (result?.created) opened++;
+        }
+        console.log(`✅ comboio_periodos_obra: ${opened} períodos abertos (backfill).`);
+    } catch (e) {
+        console.warn('⚠️ [migration] comboio_periodos_obra:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Tabela de destinos de notificação (Fase 3.1)
+// Configura, por event_type + canal (whatsapp/email), quem deve receber
+// notificações. Substitui destinatários hardcoded no cronService.
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS notification_targets (
+                id           VARCHAR(36)   PRIMARY KEY,
+                event_type   VARCHAR(100)  NOT NULL,
+                channel      ENUM('whatsapp','email') NOT NULL,
+                target_type  ENUM('user','role','employee','phone','email_address') NOT NULL,
+                target_value VARCHAR(255)  NOT NULL,
+                label        VARCHAR(200)  DEFAULT NULL,
+                active       TINYINT(1)    DEFAULT 1,
+                created_at   TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_event   (event_type),
+                INDEX idx_channel (channel),
+                INDEX idx_active  (active)
+            )
+        `);
+        console.log('✅ notification_targets: tabela ok.');
+    } catch (e) {
+        console.warn('⚠️ [migration] notification_targets:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Garante partner-espelho para todo veículo-comboio existente
+// ====================================================================
+(async () => {
+    try {
+        const { syncAllComboioPartners } = require('./utils/ensureComboioPartner');
+        const result = await syncAllComboioPartners(db);
+        console.log(`✅ Comboio→partners sync: ${result.synced}/${result.total} veículos.`);
+    } catch (e) {
+        console.warn('⚠️ [migration] sync comboio→partners:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Tabela de log de erros de solicitação de abastecimento (app)
+// Registra cada tentativa errônea (regressão de leitura, salto excessivo,
+// duplicidade, estouro orçamentário) para análise de quem/quando/por quê.
+// Também desbloqueia usuários que ficaram travados pelo antigo limite de 3.
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS solicitacao_erros_log (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                usuario_id      INT          NOT NULL,
+                usuario_nome    VARCHAR(200) DEFAULT NULL,
+                veiculo_id      VARCHAR(36)  DEFAULT NULL,
+                veiculo_placa   VARCHAR(20)  DEFAULT NULL,
+                obra_id         VARCHAR(36)  DEFAULT NULL,
+                campo_erro      VARCHAR(50)  NOT NULL,
+                tipo_erro       VARCHAR(50)  NOT NULL,
+                mensagem        TEXT         NOT NULL,
+                valor_informado VARCHAR(50)  DEFAULT NULL,
+                valor_anterior  VARCHAR(50)  DEFAULT NULL,
+                created_at      TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_usuario (usuario_id),
+                INDEX idx_data    (created_at)
+            )
+        `);
+        // Liberar usuários bloqueados pelo antigo critério dos 3 erros
+        await db.query('UPDATE users SET bloqueado_abastecimento = 0 WHERE bloqueado_abastecimento = 1');
+        console.log('✅ Migração solicitacao_erros_log concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] solicitacao_erros_log:', e.message);
     }
 })();
 

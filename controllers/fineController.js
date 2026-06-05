@@ -2,6 +2,7 @@
 const db = require('../database');
 const { v4: uuidv4 } = require('uuid');
 const whatsappService = require('../services/whatsappService');
+const { dispatchAsync } = require('../services/notificationDispatcher');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -219,6 +220,15 @@ const createFine = async (req, res) => {
         await db.execute(query, values);
 
         req.io.emit('server:sync', { targets: ['fines'] });
+
+        // Notificação configurável (Fase 3.2)
+        dispatchAsync('multa_lancada', {
+            funcionario: employeeInfo?.nome || '—',
+            motivo: dataFromFrontend.descricao || dataFromFrontend.codigoInfração || '—',
+            valor: dataFromFrontend.valor,
+            placa: vehicleInfo?.placa || '—',
+        });
+
         res.status(201).json({ id: newFineId, ...dataFromFrontend });
     } catch (error) {
         console.error('Erro ao criar multa:', error);

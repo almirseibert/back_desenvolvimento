@@ -9,6 +9,7 @@
 const db = require('../database');
 const crypto = require('crypto');
 const whatsappService = require('../services/whatsappService');
+const { dispatchAsync } = require('../services/notificationDispatcher');
 
 // --- Funções Auxiliares ---
 const parseJsonSafe = (field, key) => {
@@ -207,6 +208,15 @@ const createOrder = async (req, res) => {
 
         await connection.commit();
         if (req.io) req.io.emit('server:sync', { targets: ['orders', 'expenses'] });
+
+        // Notificação configurável (Fase 3.2)
+        dispatchAsync('ordem_gerada', {
+            numero: String(newOrderNumber).padStart(6, '0'),
+            veiculo: data.vehiclePlate || data.vehicleRegistro || '—',
+            posto: data.supplier || '—',
+            litros: data.litros || data.liters || '—',
+            combustivel: data.fuelType || '—',
+        });
 
         res.status(201).json({ id: newOrderId, orderNumber: newOrderNumber });
 

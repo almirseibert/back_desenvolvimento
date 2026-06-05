@@ -659,6 +659,198 @@ router.get('/audit-log', adminOnly, async (req, res) => {
     res.json([]);
 });
 
+// ─── COMBOIO → PARTNERS (espelho de posto para cada veículo-comboio) ─────────
+
+const {
+    ensureComboioPartner,
+    deactivateComboioPartner,
+    syncAllComboioPartners,
+    buildComboioPartnerId,
+} = require('../utils/ensureComboioPartner');
+const { listPeriods: listComboioPeriods } = require('../utils/comboioPeriodo');
+
+// Lista todos os veículos-comboio com o status do seu partner-espelho
+router.get('/comboios', adminOnly, async (req, res) => {
+    try {
+        const [vehicles] = await db.query(
+            `SELECT id, placa, registroInterno, modelo, status, isComboioVehicle, fuelLevels
+             FROM vehicles
+             WHERE isComboioVehicle = 1
+             ORDER BY registroInterno ASC`
+        );
+        const partnerIds = vehicles.map(v => buildComboioPartnerId(v.id));
+        let partnersMap = {};
+        if (partnerIds.length > 0) {
+            const placeholders = partnerIds.map(() => '?').join(',');
+            const [partnerRows] = await db.query(
+                `SELECT id, razaoSocial, status_operacional, telefone, whatsapp, email
+                 FROM partners WHERE id IN (${placeholders})`,
+                partnerIds
+            );
+            partnersMap = Object.fromEntries(partnerRows.map(p => [p.id, p]));
+        }
+        const result = vehicles.map(v => {
+            const pid = buildComboioPartnerId(v.id);
+            return {
+                vehicleId: v.id,
+                placa: v.placa,
+                registroInterno: v.registroInterno,
+                modelo: v.modelo,
+                status: v.status,
+                fuelLevels: v.fuelLevels,
+                partner: partnersMap[pid] || null,
+                partnerId: pid,
+            };
+        });
+        res.json(result);
+    } catch (error) {
+        console.error('Erro ao listar comboios:', error);
+        res.status(500).json({ error: 'Erro ao listar comboios.' });
+    }
+});
+
+// Roda a sincronização (cria partners-espelho ausentes)
+router.post('/comboios/sync', adminOnly, async (req, res) => {
+    try {
+        const result = await syncAllComboioPartners(db);
+        if (req.io) req.io.emit('server:sync', { targets: ['partners'] });
+        res.json({ message: `${result.synced}/${result.total} comboios sincronizados.`, ...result });
+    } catch (error) {
+        console.error('Erro ao sincronizar comboios:', error);
+        res.status(500).json({ error: 'Erro ao sincronizar comboios.' });
+    }
+});
+
+// Reativa o partner-espelho de um comboio específico
+router.post('/comboios/:vehicleId/activate', adminOnly, async (req, res) => {
+    try {
+        const partner = await ensureComboioPartner(db, req.params.vehicleId, { activate: true });
+        if (!partner) return res.status(404).json({ error: 'Veículo não encontrado.' });
+        if (req.io) req.io.emit('server:sync', { targets: ['partners'] });
+        res.json({ message: 'Partner-comboio ativado.', partner });
+    } catch (error) {
+        console.error('Erro ao ativar partner-comboio:', error);
+        res.status(500).json({ error: 'Erro ao ativar partner-comboio.' });
+    }
+});
+
+// Desativa (BLOQUEADO) o partner-espelho — preserva histórico
+router.post('/comboios/:vehicleId/deactivate', adminOnly, async (req, res) => {
+    try {
+        await deactivateComboioPartner(db, req.params.vehicleId);
+        if (req.io) req.io.emit('server:sync', { targets: ['partners'] });
+        res.json({ message: 'Partner-comboio desativado.' });
+    } catch (error) {
+        console.error('Erro ao desativar partner-comboio:', error);
+        res.status(500).json({ error: 'Erro ao desativar partner-comboio.' });
+    }
+});
+
+// Atualiza contatos do partner-comboio (telefone, whatsapp, email) — usado
+// para o envio automático de ordens via WhatsApp/E-mail (Fase 2.6/3.3).
+router.patch('/comboios/:vehicleId/partner', adminOnly, async (req, res) => {
+    const allowed = ['telefone', 'whatsapp', 'email', 'contatoResponsavel'];
+    const sets = [];
+    const params = [];
+    for (const key of allowed) {
+        if (key in req.body) {
+            sets.push(`${key} = ?`);
+            params.push(req.body[key] || null);
+        }
+    }
+    if (sets.length === 0) return res.json({ message: 'Nada para atualizar.' });
+    try {
+        const partnerId = buildComboioPartnerId(req.params.vehicleId);
+        // Garante que o partner existe antes de patchear
+        await ensureComboioPartner(db, req.params.vehicleId);
+        params.push(partnerId);
+        await db.query(`UPDATE partners SET ${sets.join(', ')} WHERE id = ?`, params);
+        if (req.io) req.io.emit('server:sync', { targets: ['partners'] });
+        res.json({ message: 'Contatos do comboio atualizados.' });
+    } catch (error) {
+        console.error('Erro ao atualizar contatos do comboio:', error);
+        res.status(500).json({ error: 'Erro ao atualizar contatos do comboio.' });
+    }
+});
+
+// Histórico de períodos por obra de um comboio (Fase 2.6)
+// Retorna períodos + totais agregados (litros entrada/saída/drenagem) por período.
+router.get('/comboios/:vehicleId/periodos', adminOnly, async (req, res) => {
+    try {
+        const { vehicleId } = req.params;
+        const periods = await listComboioPeriods(db, vehicleId);
+        if (periods.length === 0) return res.json([]);
+
+        const ids = periods.map(p => p.id);
+        const placeholders = ids.map(() => '?').join(',');
+        const [agg] = await db.query(
+            `SELECT obra_periodo_id, type, SUM(liters) AS total_litros, COUNT(*) AS qtd
+             FROM comboio_transactions
+             WHERE obra_periodo_id IN (${placeholders})
+             GROUP BY obra_periodo_id, type`,
+            ids
+        );
+        const aggMap = {};
+        for (const r of agg) {
+            const id = r.obra_periodo_id;
+            if (!aggMap[id]) aggMap[id] = { entrada: 0, saida: 0, drenagem: 0, qtdTotal: 0 };
+            aggMap[id][r.type] = Number(r.total_litros) || 0;
+            aggMap[id].qtdTotal += Number(r.qtd) || 0;
+        }
+        res.json(periods.map(p => ({
+            ...p,
+            totais: aggMap[p.id] || { entrada: 0, saida: 0, drenagem: 0, qtdTotal: 0 },
+        })));
+    } catch (error) {
+        console.error('Erro ao listar períodos do comboio:', error);
+        res.status(500).json({ error: 'Erro ao listar períodos do comboio.' });
+    }
+});
+
+// ─── LOG DE ERROS DE SOLICITAÇÃO DE ABASTECIMENTO (APP) ───────────────────────
+
+router.get('/solicitacao-erros', adminOnly, async (req, res) => {
+    try {
+        const { from, to, usuario_id, limit } = req.query;
+        const conds = [];
+        const params = [];
+        if (from)        { conds.push('created_at >= ?');   params.push(from); }
+        if (to)          { conds.push('created_at <= ?');   params.push(to + ' 23:59:59'); }
+        if (usuario_id)  { conds.push('usuario_id = ?');    params.push(usuario_id); }
+        const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+        const max = Math.min(parseInt(limit, 10) || 500, 2000);
+        const [rows] = await db.query(
+            `SELECT * FROM solicitacao_erros_log ${where} ORDER BY created_at DESC LIMIT ${max}`,
+            params
+        );
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao listar log de erros:', error);
+        res.status(500).json({ error: 'Erro ao listar log de erros de solicitação.' });
+    }
+});
+
+router.get('/solicitacao-erros/resumo', adminOnly, async (req, res) => {
+    try {
+        const [porUsuario] = await db.query(`
+            SELECT usuario_id, usuario_nome, COUNT(*) AS total,
+                   MAX(created_at) AS ultimo_erro,
+                   SUM(tipo_erro = 'regressao')       AS qtd_regressao,
+                   SUM(tipo_erro = 'salto_excessivo') AS qtd_salto,
+                   SUM(tipo_erro = 'duplicado')       AS qtd_duplicado,
+                   SUM(tipo_erro = 'orcamento')       AS qtd_orcamento
+            FROM solicitacao_erros_log
+            WHERE created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
+            GROUP BY usuario_id, usuario_nome
+            ORDER BY total DESC
+        `);
+        res.json({ porUsuario });
+    } catch (error) {
+        console.error('Erro ao gerar resumo de erros:', error);
+        res.status(500).json({ error: 'Erro ao gerar resumo.' });
+    }
+});
+
 // ─── SESSÕES ATIVAS (stub) ────────────────────────────────────────────────────
 
 router.get('/sessions', adminOnly, async (req, res) => {
@@ -706,6 +898,88 @@ router.post('/teste-whatsapp', async (req, res) => {
     } catch (error) {
         console.error(error);
         res.status(500).json({ sucesso: false, erro: 'Falha na comunicação com a Evolution API.' });
+    }
+});
+
+// ─── NOTIFICAÇÕES — Destinos por evento (Fase 3.1) ───────────────────────────
+// Lista todos os destinos cadastrados (opcionalmente filtrado por event_type).
+router.get('/notification-targets', adminOnly, async (req, res) => {
+    try {
+        const { event_type } = req.query;
+        const conds = [];
+        const params = [];
+        if (event_type) { conds.push('event_type = ?'); params.push(event_type); }
+        const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+        const [rows] = await db.query(
+            `SELECT id, event_type, channel, target_type, target_value, label, active, created_at
+             FROM notification_targets
+             ${where}
+             ORDER BY event_type ASC, channel ASC, created_at ASC`,
+            params
+        );
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao listar notification_targets:', error);
+        res.status(500).json({ error: 'Erro ao listar destinos de notificação.' });
+    }
+});
+
+router.post('/notification-targets', adminOnly, async (req, res) => {
+    try {
+        const { event_type, channel, target_type, target_value, label, active } = req.body || {};
+        if (!event_type || !channel || !target_type || !target_value) {
+            return res.status(400).json({ error: 'event_type, channel, target_type e target_value são obrigatórios.' });
+        }
+        const validChannels = ['whatsapp', 'email'];
+        const validTargetTypes = ['user', 'role', 'employee', 'phone', 'email_address'];
+        if (!validChannels.includes(channel)) return res.status(400).json({ error: 'channel inválido.' });
+        if (!validTargetTypes.includes(target_type)) return res.status(400).json({ error: 'target_type inválido.' });
+
+        const id = uuidv4();
+        await db.query(
+            `INSERT INTO notification_targets (id, event_type, channel, target_type, target_value, label, active)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [id, event_type, channel, target_type, String(target_value).trim(), label || null, active === 0 || active === false ? 0 : 1]
+        );
+        res.status(201).json({ id, message: 'Destino criado.' });
+    } catch (error) {
+        console.error('Erro ao criar notification_target:', error);
+        res.status(500).json({ error: 'Erro ao criar destino de notificação.' });
+    }
+});
+
+router.put('/notification-targets/:id', adminOnly, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const allowed = ['event_type', 'channel', 'target_type', 'target_value', 'label', 'active'];
+        const sets = [];
+        const params = [];
+        for (const key of allowed) {
+            if (req.body[key] !== undefined) {
+                sets.push(`${key} = ?`);
+                params.push(key === 'active' ? (req.body[key] ? 1 : 0) : req.body[key]);
+            }
+        }
+        if (sets.length === 0) return res.json({ message: 'Nada para atualizar.' });
+        params.push(id);
+        const [result] = await db.query(`UPDATE notification_targets SET ${sets.join(', ')} WHERE id = ?`, params);
+        if (!result.affectedRows) return res.status(404).json({ error: 'Destino não encontrado.' });
+        res.json({ message: 'Destino atualizado.' });
+    } catch (error) {
+        console.error('Erro ao atualizar notification_target:', error);
+        res.status(500).json({ error: 'Erro ao atualizar destino de notificação.' });
+    }
+});
+
+router.delete('/notification-targets/:id', adminOnly, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const [result] = await db.query('DELETE FROM notification_targets WHERE id = ?', [id]);
+        if (!result.affectedRows) return res.status(404).json({ error: 'Destino não encontrado.' });
+        res.status(204).end();
+    } catch (error) {
+        console.error('Erro ao excluir notification_target:', error);
+        res.status(500).json({ error: 'Erro ao excluir destino de notificação.' });
     }
 });
 

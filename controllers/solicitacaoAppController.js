@@ -53,21 +53,45 @@ const normalizeFuelType = (val) => {
     return map[v] || val;
 };
 
+// --- LOG DE ERROS DE SOLICITAÇÃO ---
+// Grava num histórico permanente quem errou, quando, em qual campo e por quê.
+// Roda em conexão separada para não ser desfeito por rollback da transação principal.
+const registrarErro = async ({ usuarioId, usuarioNome, veiculoId, veiculoPlaca, obraId,
+                               campoErro, tipoErro, mensagem, valorInformado, valorAnterior }) => {
+    try {
+        await db.query(
+            `INSERT INTO solicitacao_erros_log
+             (usuario_id, usuario_nome, veiculo_id, veiculo_placa, obra_id,
+              campo_erro, tipo_erro, mensagem, valor_informado, valor_anterior)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                usuarioId, usuarioNome || null, veiculoId || null, veiculoPlaca || null, obraId || null,
+                campoErro, tipoErro, mensagem,
+                valorInformado != null ? String(valorInformado) : null,
+                valorAnterior  != null ? String(valorAnterior)  : null,
+            ]
+        );
+    } catch (e) {
+        console.warn('[solicitacao_erros_log] falha ao registrar:', e.message);
+    }
+};
+
 // --- FUNÇÕES DO MOTORISTA ---
 
 const criarSolicitacao = async (req, res) => {
     const connection = await db.getConnection();
     await connection.beginTransaction();
-    
+
     try {
         const usuarioId = req.user.id;
-        
-        const { 
-            veiculo_id, obra_id, posto_id, funcionario_id, 
-            tipo_combustivel, litragem, flag_tanque_cheio, 
-            flag_outros, descricao_outros, horimetro, odometro, 
+        const usuarioNome = req.user.name || req.user.email || null;
+
+        const {
+            veiculo_id, obra_id, posto_id, funcionario_id,
+            tipo_combustivel, litragem, flag_tanque_cheio,
+            flag_outros, descricao_outros, horimetro, odometro,
             latitude, longitude, observacao,
-            data_abastecimento 
+            data_abastecimento
         } = req.body;
 
         const fotoPainel = req.file ? `/uploads/solicitacoes/${req.file.filename}` : null;
@@ -75,7 +99,7 @@ const criarSolicitacao = async (req, res) => {
 
         // 1. Validar Veículo
         if (!veiculo_id) throw new Error("ID do veículo não informado.");
-        
+
         const [vehicles] = await connection.execute('SELECT * FROM vehicles WHERE id = ? FOR UPDATE', [veiculo_id]);
         if (vehicles.length === 0) {
             await connection.rollback();
@@ -87,58 +111,88 @@ const criarSolicitacao = async (req, res) => {
         // 1.1 Validar se já existe solicitação em aberto para este veículo (Regra de Negócio com CORREÇÃO ANTI-TRAVAMENTO)
         // Ignora solicitações travadas mais antigas que 48 horas (se houve erro sistêmico, o motorista consegue pedir de novo após 2 dias)
         const [duplicates] = await connection.execute(
-            `SELECT id FROM solicitacoes_abastecimento 
-             WHERE veiculo_id = ? 
+            `SELECT id FROM solicitacoes_abastecimento
+             WHERE veiculo_id = ?
              AND status IN ('PENDENTE', 'LIBERADO', 'AGUARDANDO_BAIXA')
              AND data_solicitacao >= DATE_SUB(NOW(), INTERVAL 48 HOUR)`,
             [veiculo_id]
         );
 
         if (duplicates.length > 0) {
+            const msg = 'Já existe uma solicitação em andamento para este veículo. Finalize a anterior antes de abrir uma nova.';
             await connection.rollback();
             if (req.file) fs.unlinkSync(req.file.path);
-            return res.status(400).json({ 
-                error: 'Já existe uma solicitação em andamento para este veículo. Finalize a anterior antes de abrir uma nova.' 
+            await registrarErro({
+                usuarioId, usuarioNome, veiculoId: veiculo_id, veiculoPlaca: veiculo.placa, obraId: obra_id,
+                campoErro: 'veiculoId', tipoErro: 'duplicado', mensagem: msg,
+                valorInformado: duplicates[0].id, valorAnterior: null
+            });
+            return res.status(400).json({
+                error: msg,
+                campo: 'veiculoId',
+                tipo: 'duplicado'
             });
         }
 
-        // 2. Validar Bloqueio Usuário
-        const [users] = await connection.execute('SELECT bloqueado_abastecimento, tentativas_falhas_abastecimento FROM users WHERE id = ?', [usuarioId]);
-        if (!users.length || users[0].bloqueado_abastecimento === 1) {
-            await connection.rollback();
-            if (req.file) fs.unlinkSync(req.file.path);
-            return res.status(403).json({ error: 'USUÁRIO BLOQUEADO. Contate o administrador.' });
-        }
-
-        // 3. Validação Leitura (Odômetro/Horímetro)
+        // 2. Validação Leitura (Odômetro/Horímetro)
         let erroValidacao = null;
+        let erroCampo = null;
+        let erroTipo  = null;
+        let erroValorInformado = null;
+        let erroValorAnterior  = null;
+
         const novoOdometro = safeNum(odometro);
         const novoHorimetro = safeNum(horimetro);
         const antOdometro = safeNum(veiculo.odometro);
         const antHorimetro = safeNum(veiculo.horimetro);
 
         if (novoOdometro > 0) {
-            if (novoOdometro < antOdometro) erroValidacao = `Odômetro menor que o anterior (${antOdometro} Km).`;
-            else if ((novoOdometro - antOdometro) > 1000) erroValidacao = `Salto de Odômetro excessivo.`;
+            if (novoOdometro < antOdometro) {
+                erroValidacao = `Odômetro informado (${novoOdometro} Km) é menor que o atual (${antOdometro} Km).`;
+                erroCampo = 'odometro'; erroTipo = 'regressao';
+                erroValorInformado = novoOdometro; erroValorAnterior = antOdometro;
+            } else if ((novoOdometro - antOdometro) > 1000) {
+                erroValidacao = `Salto de Odômetro excessivo: de ${antOdometro} para ${novoOdometro} Km (>1000 Km).`;
+                erroCampo = 'odometro'; erroTipo = 'salto_excessivo';
+                erroValorInformado = novoOdometro; erroValorAnterior = antOdometro;
+            }
         }
-        if (novoHorimetro > 0) {
-            if (novoHorimetro < antHorimetro) erroValidacao = `Horímetro menor que o anterior (${antHorimetro} h).`;
-            else if ((novoHorimetro - antHorimetro) > 50) erroValidacao = `Salto de Horímetro excessivo.`;
+        if (!erroValidacao && novoHorimetro > 0) {
+            if (novoHorimetro < antHorimetro) {
+                erroValidacao = `Horímetro informado (${novoHorimetro} h) é menor que o atual (${antHorimetro} h).`;
+                erroCampo = 'horimetro'; erroTipo = 'regressao';
+                erroValorInformado = novoHorimetro; erroValorAnterior = antHorimetro;
+            } else if ((novoHorimetro - antHorimetro) > 50) {
+                erroValidacao = `Salto de Horímetro excessivo: de ${antHorimetro} para ${novoHorimetro} h (>50 h).`;
+                erroCampo = 'horimetro'; erroTipo = 'salto_excessivo';
+                erroValorInformado = novoHorimetro; erroValorAnterior = antHorimetro;
+            }
         }
 
         if (erroValidacao) {
-            const novasTentativas = users[0].tentativas_falhas_abastecimento + 1;
-            const bloquear = novasTentativas >= 3 ? 1 : 0;
-            
-            await connection.execute('UPDATE users SET tentativas_falhas_abastecimento = ?, bloqueado_abastecimento = ? WHERE id = ?', [novasTentativas, bloquear, usuarioId]);
+            // Apenas contabiliza tentativa — NÃO bloqueia mais o usuário.
+            // O log permanente permite ao admin entender por que o funcionário está errando.
+            await connection.execute(
+                'UPDATE users SET tentativas_falhas_abastecimento = tentativas_falhas_abastecimento + 1 WHERE id = ?',
+                [usuarioId]
+            );
             await connection.commit();
             if (req.file) fs.unlinkSync(req.file.path);
-            return res.status(400).json({ error: `Erro de Leitura: ${erroValidacao} (Tentativa ${novasTentativas}/3).` });
+            await registrarErro({
+                usuarioId, usuarioNome, veiculoId: veiculo_id, veiculoPlaca: veiculo.placa, obraId: obra_id,
+                campoErro: erroCampo, tipoErro: erroTipo, mensagem: erroValidacao,
+                valorInformado: erroValorInformado, valorAnterior: erroValorAnterior
+            });
+            return res.status(400).json({
+                error: erroValidacao,
+                campo: erroCampo,
+                tipo: erroTipo,
+                valor_informado: erroValorInformado,
+                valor_anterior:  erroValorAnterior
+            });
         }
 
-        await connection.execute('UPDATE users SET tentativas_falhas_abastecimento = 0 WHERE id = ?', [usuarioId]);
-
-        // 4. Trava Orçamentária
+        // 3. Trava Orçamentária
         const [obras] = await connection.execute('SELECT * FROM obras WHERE id = ?', [obra_id]);
         if (obras.length > 0) {
             const valorContrato = parseFloat(obras[0].valorContrato || 0);
@@ -147,9 +201,20 @@ const criarSolicitacao = async (req, res) => {
                  const totalGasto = safeNum(expenses[0].total);
                  const custoEst = (flag_tanque_cheio ? 200 : safeNum(litragem)) * 6.50;
                  if ((totalGasto + custoEst) > (valorContrato * 0.20)) {
+                    const msg = 'Limite orçamentário de combustível (20% do contrato) excedido para esta obra.';
                     await connection.rollback();
                     if (req.file) fs.unlinkSync(req.file.path);
-                    return res.status(400).json({ error: 'Limite orçamentário (20%) excedido.' });
+                    await registrarErro({
+                        usuarioId, usuarioNome, veiculoId: veiculo_id, veiculoPlaca: veiculo.placa, obraId: obra_id,
+                        campoErro: 'obraId', tipoErro: 'orcamento', mensagem: msg,
+                        valorInformado: (totalGasto + custoEst).toFixed(2),
+                        valorAnterior:  (valorContrato * 0.20).toFixed(2)
+                    });
+                    return res.status(400).json({
+                        error: msg,
+                        campo: 'obraId',
+                        tipo: 'orcamento'
+                    });
                  }
             }
         }
@@ -180,8 +245,11 @@ const criarSolicitacao = async (req, res) => {
             ]
         );
 
+        // Zera o contador de tentativas falhas após um envio bem-sucedido
+        await connection.execute('UPDATE users SET tentativas_falhas_abastecimento = 0 WHERE id = ?', [usuarioId]);
+
         await connection.commit();
-        
+
         if (req.io) {
             req.io.emit('server:sync', { targets: ['solicitacoes'] });
             req.io.emit('admin:notificacao', { tipo: 'nova_solicitacao', id: result.insertId });

@@ -34,7 +34,10 @@ const addBusinessDays = (startDate, daysToAdd) => {
 
 exports.getDashboardData = async (req, res) => {
     try {
-        const [allObras] = await db.query('SELECT * FROM obras WHERE status = "ativa"');
+        // Fase 2.8 — centros de custo NÃO entram em faturamento/dashboard de produtividade
+        const [allObras] = await db.query(
+            "SELECT * FROM obras WHERE status = 'ativa' AND (tipo_registro IS NULL OR tipo_registro != 'centro_custo')"
+        );
         
         let contracts = [];
         try { const [r] = await db.query('SELECT * FROM obra_contracts'); contracts = r || []; } catch (e) {}
@@ -263,6 +266,7 @@ exports.getAllocationForecast = async (req, res) => {
             FROM obras o
             LEFT JOIN obra_contracts oc ON o.id = oc.obra_id
             WHERE o.status = 'ativa'
+              AND (o.tipo_registro IS NULL OR o.tipo_registro != 'centro_custo')
         `);
 
         const obraMap = {};

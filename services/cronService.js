@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const db = require('../database');
 const whatsappService = require('./whatsappService');
+const { dispatchAsync } = require('./notificationDispatcher');
 const { syncJourneyEvents, syncPositions, syncDailySummary } = require('./sigasulSyncService');
 
 // ===================================================================================
@@ -142,6 +143,12 @@ cron.schedule('* * * * *', async () => {
                         `, [daqui30DiasStr]);
 
                         for (const emp of cnhVencendo) {
+                            // Notificação configurável (Fase 3.2)
+                            dispatchAsync('cnh_vencendo', {
+                                funcionario: emp.nome,
+                                vencimento: emp.dataVencimento,
+                                dias: 30,
+                            });
                             for (const gestor of gestores) {
                                 try {
                                     await db.query(`
@@ -224,6 +231,16 @@ cron.schedule('* * * * *', async () => {
 
                             // Se atingiu o limite, grava na Agenda e envia WhatsApp
                             if (needsMaintenance) {
+                                // Notificação configurável (Fase 3.2)
+                                const eventoRev = usaOdometro ? 'revisao_veiculo_leve' : 'revisao_veiculo_pesado';
+                                dispatchAsync(eventoRev, {
+                                    placa: v.placa,
+                                    modelo: `${v.marca || ''} ${v.modelo || ''}`.trim(),
+                                    kmAtual: v.hodometro,
+                                    kmRevisao: v.proximaRevisaoOdometro,
+                                    hrAtual: v.horimetro,
+                                    hrRevisao: v.proximaRevisaoHorimetro,
+                                });
                                 let enviouAgendaRecentemente = false;
                                 
                                 for (const gestor of gestores) {
@@ -276,6 +293,11 @@ cron.schedule('* * * * *', async () => {
                         const cnhVenc = formatDateDb(emp.cnhVencimento);
                         const toxVenc = formatDateDb(emp.exameToxicologicoVencimento);
 
+                        // Notificações configuráveis (Fase 3.2)
+                        if (cnhVenc === daqui30DiasStr) dispatchAsync('cnh_vencendo',          { funcionario: emp.nome, vencimento: emp.cnhVencimento,             dias: 30 });
+                        if (cnhVenc === todayStr)       dispatchAsync('cnh_vencida',           { funcionario: emp.nome, vencimento: emp.cnhVencimento });
+                        if (toxVenc === daqui30DiasStr) dispatchAsync('toxicologico_vencendo', { funcionario: emp.nome, vencimento: emp.exameToxicologicoVencimento, dias: 30 });
+
                         if (emp.contato && typeof whatsappService !== 'undefined') {
                             if (cnhVenc === daqui30DiasStr) await whatsappService.enviarMensagem(emp.contato, emp.nome, 'Alerta CNH 30 Dias', formatMsgFuncionario(`Olá ${emp.nome}, sua CNH vencerá em 30 dias. Por favor, programe a renovação.`)).catch(()=>{});
                             if (toxVenc === daqui30DiasStr) await whatsappService.enviarMensagem(emp.contato, emp.nome, 'Alerta Toxicológico 30 Dias', formatMsgFuncionario(`Olá ${emp.nome}, seu Exame Toxicológico vencerá em 30 dias. Por favor, programe a renovação.`)).catch(()=>{});
@@ -304,11 +326,17 @@ cron.schedule('* * * * *', async () => {
                     for (const emp of afastados) {
                         try {
                             await db.query(`
-                                UPDATE employees 
+                                UPDATE employees
                                 SET statusAfastamentoTipo = NULL, statusAfastamentoTermino = NULL, dataRetornoAfastamento = ?
                                 WHERE id = ?
                             `, [todayStr, emp.id]);
                         } catch(e) { console.error(`Erro ao atualizar BD para retorno de ${emp.nome}`, e); }
+
+                        // Notificação configurável (Fase 3.2)
+                        if (String(emp.statusAfastamentoTipo || '').toLowerCase().includes('férias')
+                            || String(emp.statusAfastamentoTipo || '').toLowerCase().includes('ferias')) {
+                            dispatchAsync('funcionario_retornou_ferias', { nome: emp.nome });
+                        }
 
                         for (const gestor of gestores) {
                             try {
@@ -332,6 +360,34 @@ cron.schedule('* * * * *', async () => {
                         }
                     }
                 } catch (e) { console.error('❌ [CRON] Erro Retorno Afastamento:', e.message); }
+
+                // --- E. DOCUMENTOS DE VEÍCULO VENCIDOS (Fase 3.2) ---
+                try {
+                    const [docsVencidos] = await db.query(`
+                        SELECT id, placa, registroInterno, vencimentoCRLV, vencimentoSeguro
+                        FROM vehicles
+                        WHERE status = 'Ativo'
+                          AND ((vencimentoCRLV IS NOT NULL AND vencimentoCRLV = ?) OR
+                               (vencimentoSeguro IS NOT NULL AND vencimentoSeguro = ?))
+                    `, [todayStr, todayStr]);
+
+                    for (const v of docsVencidos) {
+                        if (formatDateDb(v.vencimentoCRLV) === todayStr) {
+                            dispatchAsync('documento_veiculo_vencido', {
+                                placa: v.placa,
+                                tipoDocumento: 'CRLV',
+                                vencimento: v.vencimentoCRLV,
+                            });
+                        }
+                        if (formatDateDb(v.vencimentoSeguro) === todayStr) {
+                            dispatchAsync('documento_veiculo_vencido', {
+                                placa: v.placa,
+                                tipoDocumento: 'Seguro',
+                                vencimento: v.vencimentoSeguro,
+                            });
+                        }
+                    }
+                } catch (e) { console.error('❌ [CRON] Erro Documentos Veículo:', e.message); }
 
                 console.log('✅ [CRON] Rotina diária concluída com sucesso sem erros.');
             } catch (error) {
@@ -470,19 +526,29 @@ cron.schedule('5 5 * * *', async () => {
 cron.schedule('0 2 * * 0', () => {
     const { join } = require('path');
     const { readdir, stat, unlink } = require('fs');
-    const uploadPath = join(__dirname, '../public/uploads/orders');
     const maxAge = 30 * 24 * 60 * 60 * 1000; // 30 dias
     const now = Date.now();
 
-    readdir(uploadPath, (err, files) => {
-        if (err) return;
-        files.forEach(file => {
-            const filePath = join(uploadPath, file);
-            stat(filePath, (err, stats) => {
-                if (err) return;
-                if (now - stats.mtime.getTime() > maxAge) {
-                    unlink(filePath, () => {});
-                }
+    // Diretórios cobertos: PDFs antigos (frontend jsPDF) e os novos PDFs
+    // server-side gerados pelo orderNotifier para envio automático.
+    const dirs = [
+        join(__dirname, '../public/uploads/orders'),
+        join(__dirname, '../public/uploads/ordens'),
+    ];
+
+    dirs.forEach(uploadPath => {
+        readdir(uploadPath, (err, files) => {
+            if (err) return; // diretório pode não existir ainda
+            files.forEach(file => {
+                const filePath = join(uploadPath, file);
+                stat(filePath, (err, stats) => {
+                    if (err) return;
+                    if (now - stats.mtime.getTime() > maxAge) {
+                        unlink(filePath, (e) => {
+                            if (!e) console.log(`[cron-cleanup] removido ${filePath}`);
+                        });
+                    }
+                });
             });
         });
     });

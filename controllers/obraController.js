@@ -1,6 +1,7 @@
 const db = require('../database');
 const { v4: uuidv4 } = require('uuid');
 const { updateVehicleReading } = require('../utils/updateVehicleReading');
+const { dispatchAsync } = require('../services/notificationDispatcher');
 
 // ===================================================================================
 // FUNÇÃO AUXILIAR DE PARSE SEGURO
@@ -144,6 +145,13 @@ const createObra = async (req, res) => {
         // EMITIR EVENTO SOCKET.IO
         req.io.emit('server:sync', { targets: ['obras'] });
 
+        // Notificação configurável (Fase 3.2)
+        dispatchAsync('obra_criada', {
+            nome: data.nome,
+            orgao_contratante: data.orgao_contratante || data.orgaoContratante || null,
+            regiao: data.regiao || null,
+        });
+
         res.status(201).json({ message: 'Obra criada com sucesso' });
     } catch (error) {
         console.error('Erro ao criar obra:', error);
@@ -183,10 +191,33 @@ const updateObra = async (req, res) => {
     const query = `UPDATE obras SET ${setClause} WHERE id = ?`;
 
     try {
+        // Snapshot anterior para detectar cruzamento de marcos de progresso
+        let pctAntes = null;
+        const newPct = req.body.percentualConcluido ?? req.body.progresso;
+        if (newPct != null) {
+            try {
+                const [prevRows] = await db.query('SELECT nome, percentualConcluido FROM obras WHERE id = ?', [id]);
+                if (prevRows[0]) pctAntes = Number(prevRows[0].percentualConcluido) || 0;
+            } catch { /* coluna pode não existir — ignora */ }
+        }
+
         await db.execute(query, [...values, id]);
 
         // EMITIR EVENTO SOCKET.IO
         req.io.emit('server:sync', { targets: ['obras'] });
+
+        // Notificação configurável (Fase 3.2) — marcos 30/50/70%
+        if (newPct != null && pctAntes != null) {
+            const pctDepois = Number(newPct) || 0;
+            const marcos = [30, 50, 70];
+            for (const m of marcos) {
+                if (pctAntes < m && pctDepois >= m) {
+                    const [r] = await db.query('SELECT nome FROM obras WHERE id = ?', [id]);
+                    dispatchAsync('obra_progresso', { obra: r[0]?.nome || '—', pct: m });
+                    break;
+                }
+            }
+        }
 
         res.json({ message: 'Obra atualizada com sucesso' });
     } catch (error) {

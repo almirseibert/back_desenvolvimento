@@ -10,6 +10,16 @@ const parsePartnerJsonFields = (partner) => {
     return newPartner;
 };
 
+// --- Sanitiza tipo_parceiro para os únicos valores aceitos pelo ENUM ---
+// Evita "Data truncated for column 'tipo_parceiro' at row 1" caso o frontend
+// envie um valor desconhecido (string vazia, null, valor antigo, etc.).
+const TIPOS_PARCEIRO_VALIDOS = ['posto', 'fornecedor', 'comboio'];
+const sanitizeTipoParceiro = (tipo, fallback = 'posto') => {
+    if (tipo == null) return fallback;
+    const t = String(tipo).trim().toLowerCase();
+    return TIPOS_PARCEIRO_VALIDOS.includes(t) ? t : fallback;
+};
+
 // --- READ: Obter todos os parceiros ---
 const getAllPartners = async (req, res) => {
     try {
@@ -72,7 +82,9 @@ const createPartner = async (req, res) => {
         'contatoResponsavel',
         'cidade',
         'status_operacional',
-        'tipo_parceiro'
+        'tipo_parceiro',
+        'envia_por_whatsapp',
+        'envia_por_email'
     ];
 
     const data = req.body;
@@ -85,10 +97,8 @@ const createPartner = async (req, res) => {
         }
     });
 
-    // Se não enviar tipo, assume que é posto
-    if (!partnerData.tipo_parceiro) {
-        partnerData.tipo_parceiro = 'posto';
-    }
+    // Sanitiza tipo_parceiro: garante valor válido no ENUM ('posto', 'fornecedor', 'comboio')
+    partnerData.tipo_parceiro = sanitizeTipoParceiro(partnerData.tipo_parceiro, 'posto');
 
     const fields = Object.keys(partnerData);
     const values = Object.values(partnerData);
@@ -144,7 +154,9 @@ const updatePartner = async (req, res) => {
         'contatoResponsavel',
         'cidade',
         'status_operacional',
-        'tipo_parceiro'
+        'tipo_parceiro',
+        'envia_por_whatsapp',
+        'envia_por_email'
     ];
 
     const data = req.body;
@@ -154,15 +166,21 @@ const updatePartner = async (req, res) => {
             partnerData[key] = data[key];
         }
     });
-    
+
+    // Se tipo_parceiro veio no payload, sanitiza para um valor válido do ENUM.
+    // Se não veio, não toca no campo (preserva o tipo atual no banco).
+    if ('tipo_parceiro' in partnerData) {
+        partnerData.tipo_parceiro = sanitizeTipoParceiro(partnerData.tipo_parceiro, 'posto');
+    }
+
     const fields = Object.keys(partnerData);
     const values = fields.map(field => partnerData[field]);
     const setClause = fields.map(field => `${field} = ?`).join(', ');
-    
+
     if (fields.length === 0) {
         return res.status(400).json({ message: 'Nenhum dado para atualizar.' });
     }
-    
+
     const query = `UPDATE partners SET ${setClause} WHERE id = ?`;
 
     try {
