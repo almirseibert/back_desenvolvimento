@@ -66,6 +66,7 @@ const buildOrderText = (order) => {
         `⛽ Combustível: ${fmtFuel(order.fuelType)}`,
         `🛢️ Litros: ${parseFloat(order.liters || 0).toFixed(2)} L`,
     ];
+    if (order.readingLabel && order.readingValue && order.readingValue !== 'N/A') lines.push(`📏 ${order.readingLabel}: ${order.readingValue}`);
     if (order.pricePerLiter) lines.push(`💰 Valor/L: ${fmtMoney(order.pricePerLiter)}`);
     if (order.valorTotal)    lines.push(`💵 Total: ${fmtMoney(order.valorTotal)}`);
     if (order.invoiceNumber) lines.push(`🧾 NF: ${order.invoiceNumber}`);
@@ -89,6 +90,7 @@ const buildOrderHtml = (order) => {
             ${row('Veículo',      order.vehicleLabel)}
             ${row('Combustível',  fmtFuel(order.fuelType))}
             ${row('Litros',       `${parseFloat(order.liters || 0).toFixed(2)} L`)}
+            ${order.readingLabel && order.readingValue && order.readingValue !== 'N/A' ? row(order.readingLabel, order.readingValue) : ''}
             ${row('Valor/L',      order.pricePerLiter ? fmtMoney(order.pricePerLiter) : '')}
             ${row('Total',        order.valorTotal    ? fmtMoney(order.valorTotal)    : '')}
             ${row('Nota Fiscal',  order.invoiceNumber)}

@@ -177,32 +177,6 @@ const updateVehicleReadingLocal = async (connection, vehicleId, readings) => {
     }
 };
 
-// --- HELPER: Garante que o comboio tem entrada em partners ---
-const ensureComboioPartner = async (connection, comboioVehicleId) => {
-    if (!comboioVehicleId) return null;
-
-    const [[existing]] = await connection.execute(
-        'SELECT id FROM partners WHERE vehicle_id = ?',
-        [comboioVehicleId]
-    );
-    if (existing) return existing.id;
-
-    const [[vehicle]] = await connection.execute(
-        'SELECT registroInterno, placa FROM vehicles WHERE id = ?',
-        [comboioVehicleId]
-    );
-    if (!vehicle) return null;
-
-    const partnerId = crypto.randomUUID();
-    const nome = `Comboio ${vehicle.registroInterno || vehicle.placa || comboioVehicleId}`;
-    await connection.execute(
-        `INSERT INTO partners (id, razaoSocial, tipo_parceiro, status_operacional, vehicle_id)
-         VALUES (?, ?, 'comboio', 'ativo', ?)`,
-        [partnerId, nome, comboioVehicleId]
-    );
-    return partnerId;
-};
-
 // --- HELPER: Obtém ou cria período ativo do comboio na obra ---
 const getOrCreateActivePeriod = async (connection, comboioVehicleId, obraId) => {
     if (!comboioVehicleId || !obraId) return null;
@@ -453,18 +427,6 @@ const createEntradaTransaction = async (req, res) => {
             safeLiters, fuelType, price, valorTotal, invoiceNumber, createdBy, date
         });
 
-        // Gerencia período ativo do comboio na obra
-        let obraPeriodoId = null;
-        if (obraId) {
-            obraPeriodoId = await getOrCreateActivePeriod(connection, comboioVehicleId, obraId);
-        }
-        if (obraPeriodoId) {
-            await connection.execute(
-                'UPDATE comboio_transactions SET obra_periodo_id = ? WHERE id = ?',
-                [obraPeriodoId, transactionData.id]
-            );
-        }
-
         await connection.commit();
 
         // Notifica posto em background (fora da transação)
@@ -561,9 +523,6 @@ const createSaidaTransaction = async (req, res) => {
                 comboioPartnerId = buildComboioPartnerId(comboioVehicleId);
             }
         }
-
-        // Garante que o comboio tem entrada em partners (para cálculo de médias)
-        const comboioPartnerId = await ensureComboioPartner(connection, comboioVehicleId);
 
         // Lança na Tabela de Refuelings (Para histórico do veículo que recebeu)
         const refuelingId = crypto.randomUUID();

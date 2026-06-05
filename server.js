@@ -37,6 +37,9 @@ const http = require('http');
         // FASE 2.6 — Comboio: períodos por obra + parceiro comboio
         { table: 'comboio_transactions',   column: 'obra_periodo_id',                  def: 'VARCHAR(36) DEFAULT NULL' },
         { table: 'partners',               column: 'vehicle_id',                       def: 'VARCHAR(36) DEFAULT NULL' },
+        // Campo KM/Hr atual no modal de OS/OC
+        { table: 'orders',                 column: 'kmHrAtual',                        def: 'DECIMAL(12,1) DEFAULT NULL' },
+        { table: 'orders',                 column: 'kmHrUnit',                         def: "VARCHAR(10) DEFAULT NULL" },
     ];
 
     for (const { table, column, def } of migrations) {
