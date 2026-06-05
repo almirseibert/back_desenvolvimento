@@ -53,18 +53,20 @@ const fmtFuel = (f) => {
 
 const fmtDate = (d) => {
     if (!d) return '—';
-    try { return new Date(d).toLocaleString('pt-BR'); } catch { return String(d); }
+    try { return new Date(d).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }); } catch { return String(d); }
 };
 
 // ─── Templates ──────────────────────────────────────────────────────────────
 const buildOrderText = (order) => {
+    const veiculoLinha = [order.vehicleLabel, order.vehicleModelo].filter(Boolean).join(' | ');
+    const litrosLinha = order.isFillUp ? 'Tanque Cheio' : `${parseFloat(order.liters || 0).toFixed(2)} L`;
     const lines = [
         `*Ordem de Abastecimento Nº ${String(order.authNumber || '').padStart(6, '0')}*`,
         ``,
         `📅 Data: ${fmtDate(order.date)}`,
-        `🚛 Veículo: ${order.vehicleLabel || '—'}`,
+        `🚛 Veículo: ${veiculoLinha || '—'}`,
         `⛽ Combustível: ${fmtFuel(order.fuelType)}`,
-        `🛢️ Litros: ${parseFloat(order.liters || 0).toFixed(2)} L`,
+        `🛢️ Quantidade: ${litrosLinha}`,
     ];
     if (order.readingLabel && order.readingValue && order.readingValue !== 'N/A') lines.push(`📏 ${order.readingLabel}: ${order.readingValue}`);
     if (order.pricePerLiter) lines.push(`💰 Valor/L: ${fmtMoney(order.pricePerLiter)}`);
@@ -87,9 +89,9 @@ const buildOrderHtml = (order) => {
         </h2>
         <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:0;border:1px solid #e5e7eb">
             ${row('Data',         fmtDate(order.date))}
-            ${row('Veículo',      order.vehicleLabel)}
+            ${row('Veículo',      [order.vehicleLabel, order.vehicleModelo].filter(Boolean).join(' | '))}
             ${row('Combustível',  fmtFuel(order.fuelType))}
-            ${row('Litros',       `${parseFloat(order.liters || 0).toFixed(2)} L`)}
+            ${row('Quantidade',   order.isFillUp ? 'Tanque Cheio' : `${parseFloat(order.liters || 0).toFixed(2)} L`)}
             ${order.readingLabel && order.readingValue && order.readingValue !== 'N/A' ? row(order.readingLabel, order.readingValue) : ''}
             ${row('Valor/L',      order.pricePerLiter ? fmtMoney(order.pricePerLiter) : '')}
             ${row('Total',        order.valorTotal    ? fmtMoney(order.valorTotal)    : '')}

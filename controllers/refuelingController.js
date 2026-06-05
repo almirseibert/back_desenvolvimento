@@ -17,7 +17,7 @@ const dispatchOrderToPartner = async (refuelingId) => {
     try {
         const [[r]] = await db.execute(
             `SELECT r.id, r.authNumber, r.data, r.partnerId, r.partnerName,
-                    r.fuelType, r.litrosLiberados, r.pricePerLiter, r.invoiceNumber,
+                    r.fuelType, r.litrosLiberados, r.isFillUp, r.pricePerLiter, r.invoiceNumber,
                     r.odometro, r.horimetro, r.createdBy,
                     v.registroInterno, v.placa, v.marca, v.modelo, v.tipo,
                     e.nome AS employeeName,
@@ -49,6 +49,7 @@ const dispatchOrderToPartner = async (refuelingId) => {
                 date: r.data,
                 fuelType: r.fuelType,
                 liters: r.litrosLiberados,
+                isFillUp: !!r.isFillUp,
                 pricePerLiter: r.pricePerLiter,
                 invoiceNumber: r.invoiceNumber,
                 partnerName: r.partnerName,

@@ -293,18 +293,22 @@ app.post('/send', async (req, res) => {
         const resp = await client.sendMessage(chatId, message);
         const messageId = resp?.id?._serialized || null;
 
+        let pdfStatus = null;
         if (documentUrl) {
-            console.log(`📎 Baixando anexo de: ${documentUrl}`);
-            const media = await MessageMedia.fromUrl(
-                documentUrl,
-                { unsafeMime: true }
-            );
-            media.filename = 'Documento_FrotasMAK.pdf';
-            await client.sendMessage(chatId, media, { sendMediaAsDocument: true });
+            try {
+                console.log(`📎 Baixando anexo de: ${documentUrl}`);
+                const media = await MessageMedia.fromUrl(documentUrl, { unsafeMime: true });
+                media.filename = 'Ordem_Abastecimento_FrotasMAK.pdf';
+                await client.sendMessage(chatId, media, { sendMediaAsDocument: true });
+                pdfStatus = 'enviado';
+            } catch (pdfErr) {
+                console.warn(`⚠️ Falha ao enviar PDF para ${number}:`, pdfErr.message || pdfErr);
+                pdfStatus = `falha: ${pdfErr.message || pdfErr}`;
+            }
         }
 
         console.log(`✅ Mensagem enviada para -> ${number}`);
-        res.json({ success: true, messageId });
+        res.json({ success: true, messageId, pdfStatus });
 
     } catch (err) {
         // whatsapp-web.js pode lançar valores não-padrão (strings minificadas como "t", "e", etc.)
