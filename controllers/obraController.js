@@ -37,7 +37,7 @@ const parseObraJsonFields = (obra) => {
 // --- GET ALL OBRAS ---
 const getAllObras = async (req, res) => {
     try {
-        const [rows] = await db.query('SELECT * FROM obras');
+        const [rows] = await db.query('SELECT * FROM obras ORDER BY nome ASC');
         const [historyRows] = await db.query('SELECT * FROM obras_historico_veiculos');
 
         const [billingRows] = await db.query(`

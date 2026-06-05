@@ -310,6 +310,34 @@ const http = require('http');
 })();
 
 // ====================================================================
+// MIGRAÇÃO — Tabela de contatos internos (Fase 4.1)
+// Cadastro central de pessoas-chave (RH, Coordenação, Gestores) para
+// referência rápida e como destinos de notificação futuros.
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS internal_contacts (
+                id         VARCHAR(36)  PRIMARY KEY,
+                nome       VARCHAR(200) NOT NULL,
+                cargo      VARCHAR(100) DEFAULT NULL,
+                setor      VARCHAR(100) DEFAULT NULL,
+                whatsapp   VARCHAR(20)  DEFAULT NULL,
+                email      VARCHAR(200) DEFAULT NULL,
+                observacao VARCHAR(500) DEFAULT NULL,
+                ativo      TINYINT(1)   DEFAULT 1,
+                created_at TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_ativo (ativo),
+                INDEX idx_nome  (nome)
+            )
+        `);
+        console.log('✅ internal_contacts: tabela ok.');
+    } catch (e) {
+        console.warn('⚠️ [migration] internal_contacts:', e.message);
+    }
+})();
+
+// ====================================================================
 // MIGRAÇÃO — Tabela de destinos de notificação (Fase 3.1)
 // Configura, por event_type + canal (whatsapp/email), quem deve receber
 // notificações. Substitui destinatários hardcoded no cronService.

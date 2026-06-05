@@ -36,7 +36,7 @@ exports.getDashboardData = async (req, res) => {
     try {
         // Fase 2.8 — centros de custo NÃO entram em faturamento/dashboard de produtividade
         const [allObras] = await db.query(
-            "SELECT * FROM obras WHERE status = 'ativa' AND (tipo_registro IS NULL OR tipo_registro != 'centro_custo')"
+            "SELECT * FROM obras WHERE status = 'ativa' AND (tipo_registro IS NULL OR tipo_registro != 'centro_custo') ORDER BY nome ASC"
         );
         
         let contracts = [];

@@ -23,7 +23,7 @@ const sanitizeTipoParceiro = (tipo, fallback = 'posto') => {
 // --- READ: Obter todos os parceiros ---
 const getAllPartners = async (req, res) => {
     try {
-        const [partnerRows] = await db.execute('SELECT * FROM partners');
+        const [partnerRows] = await db.execute('SELECT * FROM partners ORDER BY razaoSocial ASC');
         const [priceRows] = await db.execute('SELECT * FROM partner_fuel_prices');
         
         const partnersWithPrices = partnerRows.map(partner => {

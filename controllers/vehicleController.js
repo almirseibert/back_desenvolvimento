@@ -46,6 +46,7 @@ const getAllVehicles = async (req, res) => {
             LEFT JOIN (
                 SELECT vehicle_id, COUNT(*) AS cnt FROM checklists GROUP BY vehicle_id
             ) cc ON cc.vehicle_id = v.id
+            ORDER BY v.registroInterno ASC, v.placa ASC
         `;
         const [rows] = await db.execute(query);
         const vehicles = rows.map(parseVehicleJsonFields);
