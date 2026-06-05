@@ -121,7 +121,10 @@ const resolveTargets = async (targets) => {
                 if (t.channel === 'email' && u.email) resolved.push({ channel: 'email', contact: u.email, name: u.name });
                 // users não possui telefone; whatsapp via user é ignorado
             } else if (t.target_type === 'role') {
-                const [rows] = await db.query('SELECT name, email FROM users WHERE role = ? AND status = ?', [t.target_value, 'Ativo']);
+                const [rows] = await db.query(
+                    "SELECT name, email FROM users WHERE role = ? AND (status = 'ativo' OR status = 'Ativo' OR status IS NULL)",
+                    [t.target_value]
+                );
                 for (const u of rows) {
                     if (t.channel === 'email' && u.email) resolved.push({ channel: 'email', contact: u.email, name: u.name });
                     // whatsapp por role idem: sem coluna de telefone em users

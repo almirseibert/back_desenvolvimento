@@ -143,12 +143,7 @@ cron.schedule('* * * * *', async () => {
                         `, [daqui30DiasStr]);
 
                         for (const emp of cnhVencendo) {
-                            // Notificação configurável (Fase 3.2)
-                            dispatchAsync('cnh_vencendo', {
-                                funcionario: emp.nome,
-                                vencimento: emp.dataVencimento,
-                                dias: 30,
-                            });
+                            // cnh_vencendo (Fase 3.2) — disparado em C (vencimentosRH) para evitar duplicidade
                             for (const gestor of gestores) {
                                 try {
                                     await db.query(`
