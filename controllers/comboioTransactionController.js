@@ -177,6 +177,118 @@ const updateVehicleReadingLocal = async (connection, vehicleId, readings) => {
     }
 };
 
+// --- HELPER: Garante que o comboio tem entrada em partners ---
+const ensureComboioPartner = async (connection, comboioVehicleId) => {
+    if (!comboioVehicleId) return null;
+
+    const [[existing]] = await connection.execute(
+        'SELECT id FROM partners WHERE vehicle_id = ?',
+        [comboioVehicleId]
+    );
+    if (existing) return existing.id;
+
+    const [[vehicle]] = await connection.execute(
+        'SELECT registroInterno, placa FROM vehicles WHERE id = ?',
+        [comboioVehicleId]
+    );
+    if (!vehicle) return null;
+
+    const partnerId = crypto.randomUUID();
+    const nome = `Comboio ${vehicle.registroInterno || vehicle.placa || comboioVehicleId}`;
+    await connection.execute(
+        `INSERT INTO partners (id, razaoSocial, tipo_parceiro, status_operacional, vehicle_id)
+         VALUES (?, ?, 'comboio', 'ativo', ?)`,
+        [partnerId, nome, comboioVehicleId]
+    );
+    return partnerId;
+};
+
+// --- HELPER: Obtém ou cria período ativo do comboio na obra ---
+const getOrCreateActivePeriod = async (connection, comboioVehicleId, obraId) => {
+    if (!comboioVehicleId || !obraId) return null;
+
+    const [[activePeriod]] = await connection.execute(
+        'SELECT id, obra_id FROM comboio_periodos_obra WHERE comboio_id = ? AND ativo = 1',
+        [comboioVehicleId]
+    );
+
+    if (activePeriod) {
+        if (activePeriod.obra_id === obraId) return activePeriod.id;
+        // Obra mudou — fecha período atual
+        await connection.execute(
+            'UPDATE comboio_periodos_obra SET data_fim = NOW(), ativo = 0 WHERE id = ?',
+            [activePeriod.id]
+        );
+    }
+
+    const newId = crypto.randomUUID();
+    await connection.execute(
+        'INSERT INTO comboio_periodos_obra (id, comboio_id, obra_id, data_inicio) VALUES (?, ?, ?, NOW())',
+        [newId, comboioVehicleId, obraId]
+    );
+    return newId;
+};
+
+// --- HELPER: Cria ordem C/S para entrada de combustível no comboio ---
+const createOrderForEntrada = async (connection, { partnerId, partnerName, comboioVehicleId, obraId, safeLiters, fuelType, price, valorTotal, invoiceNumber, createdBy, date }) => {
+    const [counterRows] = await connection.execute(
+        'SELECT lastNumber FROM counters WHERE name = "purchaseOrderCounter" FOR UPDATE'
+    );
+    const newOrderNumber = (counterRows[0]?.lastNumber || 0) + 1;
+    await connection.execute(
+        'INSERT INTO counters (name, lastNumber) VALUES ("purchaseOrderCounter", ?) ON DUPLICATE KEY UPDATE lastNumber = ?',
+        [newOrderNumber, newOrderNumber]
+    );
+
+    const fuelLabel = fuelType === 'dieselS10' ? 'Diesel S10' : fuelType === 'dieselComum' ? 'Diesel Comum' : fuelType;
+    const items = JSON.stringify([{
+        descricao: `Combustível: ${fuelLabel}`,
+        quantidade: safeLiters,
+        unidade: 'L',
+        valorUnitario: price,
+        total: valorTotal
+    }]);
+
+    const orderId = crypto.randomUUID();
+    await connection.execute(
+        `INSERT INTO orders (id, orderNumber, date, supplierId, supplier, vehicleId, obraId, totalValue, status, invoiceNumber, items, createdBy)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Concluída', ?, ?, ?)`,
+        [orderId, newOrderNumber, new Date(date), partnerId, partnerName, comboioVehicleId, obraId || null, valorTotal, invoiceNumber || null, items, JSON.stringify(createdBy || {})]
+    );
+    return { orderId, orderNumber: newOrderNumber };
+};
+
+// --- HELPER: Notifica posto após entrada (WhatsApp / Email) ---
+const notifyPartnerEntrada = async (partnerId, partnerName, orderNumber, safeLiters, fuelType, date) => {
+    try {
+        const [[partner]] = await db.execute(
+            'SELECT whatsapp, email, envia_por_whatsapp, envia_por_email FROM partners WHERE id = ?',
+            [partnerId]
+        );
+        if (!partner) return;
+
+        const fuelLabel = fuelType === 'dieselS10' ? 'Diesel S10' : fuelType === 'dieselComum' ? 'Diesel Comum' : fuelType;
+        const dateStr = new Date(date).toLocaleDateString('pt-BR');
+        const msg = `*Entrada de Combustível — Comboio*\nOrdem nº ${orderNumber}\nCombustível: ${fuelLabel}\nLitros: ${safeLiters}\nData: ${dateStr}`;
+
+        if (partner.envia_por_whatsapp && partner.whatsapp) {
+            await whatsappService.enviarMensagem(partner.whatsapp, partnerName, 'Entrada Comboio', msg);
+        }
+        if (partner.envia_por_email && partner.email) {
+            const transporter = nodemailer.createTransport({
+                host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+                port: process.env.EMAIL_PORT || 587,
+                secure: false,
+                auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+                tls: { rejectUnauthorized: false }
+            });
+            await transporter.sendMail({ from: process.env.EMAIL_USER, to: partner.email, subject: `Entrada Comboio — Ordem nº ${orderNumber}`, text: msg });
+        }
+    } catch (err) {
+        console.warn('[comboio] notifyPartnerEntrada:', err.message);
+    }
+};
+
 // --- CRUD ---
 
 const getAllComboioTransactions = async (req, res) => {
@@ -335,9 +447,30 @@ const createEntradaTransaction = async (req, res) => {
             await updateMonthlyExpense(connection, refuelingData.obraId, refuelingData.partnerId, refuelingData.fuelType, refuelingData.data);
         }
 
+        // Cria ordem C/S para rastreabilidade da entrada
+        const { orderNumber } = await createOrderForEntrada(connection, {
+            partnerId, partnerName, comboioVehicleId, obraId,
+            safeLiters, fuelType, price, valorTotal, invoiceNumber, createdBy, date
+        });
+
+        // Gerencia período ativo do comboio na obra
+        let obraPeriodoId = null;
+        if (obraId) {
+            obraPeriodoId = await getOrCreateActivePeriod(connection, comboioVehicleId, obraId);
+        }
+        if (obraPeriodoId) {
+            await connection.execute(
+                'UPDATE comboio_transactions SET obra_periodo_id = ? WHERE id = ?',
+                [obraPeriodoId, transactionData.id]
+            );
+        }
+
         await connection.commit();
 
-        req.io.emit('server:sync', { targets: ['comboio', 'vehicles', 'refuelings', 'expenses'] });
+        // Notifica posto em background (fora da transação)
+        notifyPartnerEntrada(partnerId, partnerName, orderNumber, safeLiters, fuelType, date);
+
+        req.io.emit('server:sync', { targets: ['comboio', 'vehicles', 'refuelings', 'expenses', 'orders'] });
 
         // ─── Envio automático da ordem ────────────────────────────────────
         // Para o posto fornecedor: respeita partners.envia_por_whatsapp / envia_por_email
@@ -429,6 +562,9 @@ const createSaidaTransaction = async (req, res) => {
             }
         }
 
+        // Garante que o comboio tem entrada em partners (para cálculo de médias)
+        const comboioPartnerId = await ensureComboioPartner(connection, comboioVehicleId);
+
         // Lança na Tabela de Refuelings (Para histórico do veículo que recebeu)
         const refuelingId = crypto.randomUUID();
         const refuelingData = {
@@ -516,7 +652,18 @@ const createSaidaTransaction = async (req, res) => {
                 transactionId: transactionData.id
             });
         }
-        
+
+        // Gerencia período ativo do comboio na obra
+        if (obraId) {
+            const obraPeriodoId = await getOrCreateActivePeriod(connection, comboioVehicleId, obraId);
+            if (obraPeriodoId) {
+                await connection.execute(
+                    'UPDATE comboio_transactions SET obra_periodo_id = ? WHERE id = ?',
+                    [obraPeriodoId, transactionData.id]
+                );
+            }
+        }
+
         await connection.commit();
 
         req.io.emit('server:sync', { targets: ['comboio', 'vehicles', 'expenses', 'refuelings'] });

@@ -1,5 +1,6 @@
 const db = require('../database');
 const { v4: uuidv4 } = require('uuid');
+const { updateVehicleReading } = require('../utils/updateVehicleReading');
 
 // --- Helper para parsear JSON de forma segura ---
 const parseJsonSafe = (field, key) => {
@@ -310,13 +311,18 @@ const completeRevision = async (req, res) => {
         await connection.execute(updatePlanQuery, updatePlanParams);
 
         // 4. Atualizar Leitura do Veículo
-        // ATENÇÃO: A pedido, a atualização de odometro/horimetro no veículo ao concluir a revisão/manutenção foi removida.
-        // Isso evita que a leitura principal do veículo seja alterada erroneamente neste fluxo.
+        if (leituraRealizada) {
+            try {
+                await updateVehicleReading(connection, vehicleId, vehicle.tipo, parseFloat(leituraRealizada));
+            } catch (readingErr) {
+                console.warn('Aviso: não foi possível atualizar leitura do veículo:', readingErr.message);
+            }
+        }
 
         await connection.commit();
 
-        req.io.emit('server:sync', { targets: ['revisions'] });
-        res.json({ message: 'Revisão concluída com sucesso! (Leitura do veículo inalterada)' });
+        req.io.emit('server:sync', { targets: ['revisions', 'vehicles'] });
+        res.json({ message: 'Revisão concluída com sucesso!' });
 
     } catch (error) {
         await connection.rollback();

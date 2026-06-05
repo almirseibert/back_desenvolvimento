@@ -1,5 +1,6 @@
 const db = require('../database');
 const { v4: uuidv4 } = require('uuid');
+const { updateVehicleReading } = require('../utils/updateVehicleReading');
 
 // GET: Listar Pneus
 const getAllTires = async (req, res) => {
@@ -87,19 +88,20 @@ const updateTire = async (req, res) => {
 
 // POST: Movimentação (Instalar/Remover/Transferir/Manutenção/Sucata)
 const registerTransaction = async (req, res) => {
-    const { 
-        tireId, 
-        vehicleId = null, 
-        type, // 'install', 'remove', 'transfer', 'maintenance', 'scrap', 'restock'
-        position = null, 
-        date = new Date(), 
-        odometer = null, 
-        horimeter = null, 
+    const {
+        tireId,
+        vehicleId = null,
+        type,
+        position = null,
+        date = new Date(),
         observation = '',
-        employeeName = null,
         obraName = null,
-        vendorName = null 
+        vendorName = null
     } = req.body;
+
+    const odometer   = req.body.odometer   ? parseFloat(req.body.odometer)   : null;
+    const horimeter  = req.body.horimeter  ? parseFloat(req.body.horimeter)  : null;
+    const employeeName = req.body.employeeName || null;
 
     const connection = await db.getConnection();
     try {
@@ -118,7 +120,7 @@ const registerTransaction = async (req, res) => {
             }
 
             await connection.execute(
-                `UPDATE tires SET status = 'Em Uso', currentVehicleId = ?, position = ?, location = 'Veículo' WHERE id = ?`,
+                `UPDATE tires SET status = 'Em Uso', tireCondition = 'Usado', currentVehicleId = ?, position = ?, location = 'Veículo' WHERE id = ?`,
                 [vehicleId, position, tireId]
             );
         } else if (type === 'remove') {
@@ -159,27 +161,14 @@ const registerTransaction = async (req, res) => {
         );
 
         // --- ATUALIZAÇÃO DA LEITURA DO VEÍCULO (UNIFICADO) ---
-        // Se uma leitura foi informada durante a troca, atualizamos o veículo
         if (vehicleId && (odometer || horimeter)) {
-            const [vehicles] = await connection.execute('SELECT mediaCalculo FROM vehicles WHERE id = ?', [vehicleId]);
+            const [vehicles] = await connection.execute('SELECT tipo, mediaCalculo FROM vehicles WHERE id = ?', [vehicleId]);
             if (vehicles.length > 0) {
                 const vehicle = vehicles[0];
-                let updateV = '';
-                let val = 0;
-
                 const isHourBased = vehicle.mediaCalculo === 'horimetro';
-
-                if (isHourBased && horimeter) {
-                    // Atualiza horimetro e limpa legados
-                    updateV = 'UPDATE vehicles SET horimetro = ?, horimetroDigital = NULL, horimetroAnalogico = NULL WHERE id = ?';
-                    val = parseFloat(horimeter);
-                } else if (!isHourBased && odometer) {
-                    updateV = 'UPDATE vehicles SET odometro = ? WHERE id = ?';
-                    val = parseFloat(odometer);
-                }
-
-                if (updateV && val > 0) {
-                    await connection.execute(updateV, [val, vehicleId]);
+                const readingValue = isHourBased ? parseFloat(horimeter) : parseFloat(odometer);
+                if (readingValue > 0) {
+                    await updateVehicleReading(connection, vehicleId, vehicle.tipo, readingValue);
                 }
             }
         }

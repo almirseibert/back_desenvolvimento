@@ -30,8 +30,13 @@ const http = require('http');
         // FASE 2.9 — Canais de envio de ordem para parceiros (posto)
         { table: 'partners',               column: 'envia_por_whatsapp',               def: 'TINYINT(1) DEFAULT 0' },
         { table: 'partners',               column: 'envia_por_email',                  def: 'TINYINT(1) DEFAULT 0' },
-        // FASE 2.6 — Histórico de períodos por obra para comboios
+        // FASE 2.10 — Colunas de movimentação de pneus
+        { table: 'tire_transactions',      column: 'employeeName',                     def: 'VARCHAR(255) NULL' },
+        { table: 'tire_transactions',      column: 'odometer',                         def: 'DECIMAL(10,1) NULL' },
+        { table: 'tire_transactions',      column: 'horimeter',                        def: 'DECIMAL(10,1) NULL' },
+        // FASE 2.6 — Comboio: períodos por obra + parceiro comboio
         { table: 'comboio_transactions',   column: 'obra_periodo_id',                  def: 'VARCHAR(36) DEFAULT NULL' },
+        { table: 'partners',               column: 'vehicle_id',                       def: 'VARCHAR(36) DEFAULT NULL' },
     ];
 
     for (const { table, column, def } of migrations) {
@@ -438,6 +443,29 @@ const http = require('http');
         console.log('✅ Migração vehicle_fuel_averages concluída.');
     } catch (e) {
         console.warn('⚠️ [migration] vehicle_fuel_averages:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Tabela de Períodos de Obra do Comboio (Fase 2.6)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS comboio_periodos_obra (
+                id          VARCHAR(36)  PRIMARY KEY,
+                comboio_id  VARCHAR(36)  NOT NULL,
+                obra_id     VARCHAR(36)  NOT NULL,
+                data_inicio DATETIME     NOT NULL,
+                data_fim    DATETIME     DEFAULT NULL,
+                ativo       TINYINT(1)   DEFAULT 1,
+                INDEX idx_comboio (comboio_id),
+                INDEX idx_obra    (obra_id)
+            )
+        `);
+        console.log('✅ Migração comboio_periodos_obra concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] comboio_periodos_obra:', e.message);
     }
 })();
 
