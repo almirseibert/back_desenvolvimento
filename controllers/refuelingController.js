@@ -387,6 +387,43 @@ const createRefuelingOrder = async (req, res) => {
              dataAbastecimento = new Date(dateStr);
         }
 
+        // ─── Anti-duplicidade: bloqueia 2ª ordem aberta para o mesmo veículo ──
+        // Exceção: data em fim-de-semana ou feriado nacional fixo (antecipação
+        // legítima para obras que operam quando o escritório está fechado).
+        // FOR UPDATE serializa contra criações concorrentes dentro da transação.
+        if (data.vehicleId) {
+            const FERIADOS_BR_FIXOS = new Set([
+                '01-01', '04-21', '05-01', '09-07',
+                '10-12', '11-02', '11-15', '12-25'
+            ]);
+            const dow = dataAbastecimento.getDay();
+            const mmdd = dataAbastecimento.toISOString().slice(5, 10);
+            const isWeekendOrHoliday = dow === 0 || dow === 6 || FERIADOS_BR_FIXOS.has(mmdd);
+
+            if (!isWeekendOrHoliday) {
+                const [openRows] = await connection.execute(
+                    `SELECT id, authNumber, status
+                       FROM refuelings
+                      WHERE vehicleId = ?
+                        AND status NOT IN ('Concluída','Concluida','Cancelada','Negada','Baixada')
+                      LIMIT 1
+                      FOR UPDATE`,
+                    [data.vehicleId]
+                );
+                if (openRows.length > 0) {
+                    await connection.rollback();
+                    connection.release();
+                    return res.status(409).json({
+                        error: `Já existe ordem em aberto Nº ${openRows[0].authNumber} (${openRows[0].status}) para este veículo. Conclua ou cancele antes de emitir outra.`,
+                        code: 'DUPLICATE_OPEN_ORDER',
+                        openOrderId: openRows[0].id,
+                        openOrderAuthNumber: openRows[0].authNumber,
+                        openOrderStatus: openRows[0].status
+                    });
+                }
+            }
+        }
+
         let finalPartnerName = data.partnerName;
         if (!finalPartnerName && data.partnerId) {
             const [pRows] = await connection.execute('SELECT razaoSocial FROM partners WHERE id = ?', [data.partnerId]);
