@@ -65,11 +65,12 @@ const updateMonthlyExpense = async (connection, obraId, partnerId, fuelType, dat
     // Soma refuelings do posto (separando por obra ou pegando os que não tem obra = comboio)
     let querySum = `
         SELECT SUM(
-            (COALESCE(litrosAbastecidos, 0) * COALESCE(pricePerLiter, 0)) + 
+            (COALESCE(litrosAbastecidos, 0) * COALESCE(pricePerLiter, 0)) +
+            (COALESCE(litrosAbastecidosArla, 0) * COALESCE(pricePerLiterArla, 0)) +
             COALESCE(outrosValor, 0)
         ) as total
         FROM refuelings
-        WHERE partnerId = ? 
+        WHERE partnerId = ?
           AND fuelType = ?
           AND data BETWEEN ? AND ?
     `;

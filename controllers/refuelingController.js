@@ -141,10 +141,12 @@ const parseRefuelingRows = (rows) => {
         confirmedBy: parseJsonSafe(row.confirmedBy),
         editedBy: parseJsonSafe(row.editedBy),
         litrosAbastecidos: row.litrosAbastecidos ? parseFloat(row.litrosAbastecidos) : 0,
+        litrosAbastecidosArla: row.litrosAbastecidosArla ? parseFloat(row.litrosAbastecidosArla) : 0,
         pricePerLiter: row.pricePerLiter ? parseFloat(row.pricePerLiter) : 0,
+        pricePerLiterArla: row.pricePerLiterArla ? parseFloat(row.pricePerLiterArla) : 0,
         outrosValor: row.outrosValor ? parseFloat(row.outrosValor) : 0,
         outrosGeraValor: !!row.outrosGeraValor,
-        invoiceNumber: row.invoiceNumber || null 
+        invoiceNumber: row.invoiceNumber || null
     }));
 };
 
@@ -166,12 +168,13 @@ const updateMonthlyExpense = async (connection, obraId, partnerId, fuelType, dat
 
     const querySum = `
         SELECT SUM(
-            (COALESCE(litrosAbastecidos, 0) * COALESCE(pricePerLiter, 0)) + 
+            (COALESCE(litrosAbastecidos, 0) * COALESCE(pricePerLiter, 0)) +
+            (COALESCE(litrosAbastecidosArla, 0) * COALESCE(pricePerLiterArla, 0)) +
             COALESCE(outrosValor, 0)
         ) as total
         FROM refuelings
-        WHERE obraId = ? 
-          AND partnerId = ? 
+        WHERE obraId = ?
+          AND partnerId = ?
           AND fuelType = ?
           AND data BETWEEN ? AND ?
           AND status = 'Concluída' -- Importante: Somar apenas concluídas para não duplicar valores pendentes
@@ -602,15 +605,16 @@ const updateRefuelingOrder = async (req, res) => {
 
 const confirmRefuelingOrder = async (req, res) => {
     const { id } = req.params;
-    const { 
-        litrosAbastecidos, 
-        litrosAbastecidosArla, 
-        pricePerLiter, 
-        confirmedReading, 
-        confirmedBy, 
-        outrosValor, 
-        invoiceNumber, 
-        updatePartnerPrice 
+    const {
+        litrosAbastecidos,
+        litrosAbastecidosArla,
+        pricePerLiter,
+        pricePerLiterArla,
+        confirmedReading,
+        confirmedBy,
+        outrosValor,
+        invoiceNumber,
+        updatePartnerPrice
     } = req.body;
     
     const connection = await db.getConnection();
@@ -648,14 +652,20 @@ const confirmRefuelingOrder = async (req, res) => {
         }
 
         const safePrice = safeNum(pricePerLiter, true);
-        
+        const safePriceArla = safeNum(pricePerLiterArla, true);
+
         if (order.partnerId && safePrice > 0 && order.fuelType && updatePartnerPrice === true) {
             const priceQuery = `
-                INSERT INTO partner_fuel_prices (partnerId, fuelType, price) 
-                VALUES (?, ?, ?) 
+                INSERT INTO partner_fuel_prices (partnerId, fuelType, price)
+                VALUES (?, ?, ?)
                 ON DUPLICATE KEY UPDATE price = VALUES(price)
             `;
             await connection.execute(priceQuery, [order.partnerId, order.fuelType, safePrice]);
+
+            // Atualiza também o preço do Arla cadastrado para o posto, se informado
+            if (order.needsArla && safePriceArla > 0) {
+                await connection.execute(priceQuery, [order.partnerId, 'Arla', safePriceArla]);
+            }
         }
 
         const orderUpdate = {
@@ -663,6 +673,7 @@ const confirmRefuelingOrder = async (req, res) => {
             litrosAbastecidos: safeNum(litrosAbastecidos, true),
             litrosAbastecidosArla: safeNum(litrosAbastecidosArla, true),
             pricePerLiter: safePrice,
+            pricePerLiterArla: safePriceArla,
             confirmedBy: JSON.stringify(confirmedBy),
             outrosValor: safeNum(outrosValor, true),
             invoiceNumber: invoiceNumber ? invoiceNumber.toString().trim() : null,
