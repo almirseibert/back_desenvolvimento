@@ -18,6 +18,8 @@ const dispatchOrderToPartner = async (refuelingId) => {
         const [[r]] = await db.execute(
             `SELECT r.id, r.authNumber, r.data, r.partnerId, r.partnerName,
                     r.fuelType, r.litrosLiberados, r.isFillUp, r.pricePerLiter, r.invoiceNumber,
+                    r.needsArla, r.isFillUpArla, r.litrosLiberadosArla,
+                    r.outros, r.outrosValor,
                     r.odometro, r.horimetro, r.createdBy,
                     v.registroInterno, v.placa, v.marca, v.modelo, v.tipo,
                     e.nome AS employeeName,
@@ -59,6 +61,11 @@ const dispatchOrderToPartner = async (refuelingId) => {
                 obraName: r.obraName || '',
                 readingLabel,
                 readingValue,
+                needsArla: !!r.needsArla,
+                isFillUpArla: !!r.isFillUpArla,
+                litrosLiberadosArla: r.litrosLiberadosArla,
+                outros: r.outros,
+                outrosValor: r.outrosValor,
                 issuer,
             },
         }).then(result => {
