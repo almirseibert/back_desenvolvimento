@@ -144,6 +144,7 @@ const ALLOWED_VEHICLE_FIELDS = new Set([
     'tamanho', 'capacidadeCarga', 'numeroPneus', 'numeroEixos',
     'media_consumo', 'percentual_tolerancia',
     'isComboioVehicle', 'ativo', 'isSucata', 'isOutsourced',
+    'permiteMultiplosAbastecimentos',
 ]);
 
 const updateVehicle = async (req, res) => {

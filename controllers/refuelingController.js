@@ -397,8 +397,11 @@ const createRefuelingOrder = async (req, res) => {
         }
 
         // ─── Anti-duplicidade: bloqueia 2ª ordem aberta para o mesmo veículo ──
-        // Exceção: data em fim-de-semana ou feriado nacional fixo (antecipação
-        // legítima para obras que operam quando o escritório está fechado).
+        // Exceções:
+        //  - data em fim-de-semana ou feriado nacional fixo (antecipação legítima
+        //    para obras que operam quando o escritório está fechado);
+        //  - veículo fictício (vehicles.permiteMultiplosAbastecimentos = 1)
+        //    usado para ajuda de custo, gerador, lava-jato etc.
         // FOR UPDATE serializa contra criações concorrentes dentro da transação.
         if (data.vehicleId) {
             const FERIADOS_BR_FIXOS = new Set([
@@ -409,7 +412,14 @@ const createRefuelingOrder = async (req, res) => {
             const mmdd = dataAbastecimento.toISOString().slice(5, 10);
             const isWeekendOrHoliday = dow === 0 || dow === 6 || FERIADOS_BR_FIXOS.has(mmdd);
 
-            if (!isWeekendOrHoliday) {
+            const [vehicleRows] = await connection.execute(
+                'SELECT permiteMultiplosAbastecimentos FROM vehicles WHERE id = ?',
+                [data.vehicleId]
+            );
+            const allowMultiple = vehicleRows.length > 0
+                && (vehicleRows[0].permiteMultiplosAbastecimentos == 1 || vehicleRows[0].permiteMultiplosAbastecimentos === true);
+
+            if (!isWeekendOrHoliday && !allowMultiple) {
                 const [openRows] = await connection.execute(
                     `SELECT id, authNumber, status
                        FROM refuelings

@@ -25,6 +25,8 @@ const http = require('http');
         { table: 'vehicles',               column: 'sub_tipo',                        def: 'VARCHAR(100) DEFAULT NULL' },
         { table: 'vehicles',               column: 'media_consumo',                   def: 'DECIMAL(10,3) DEFAULT NULL' },
         { table: 'vehicles',               column: 'percentual_tolerancia',           def: 'DECIMAL(5,2) DEFAULT 20.00' },
+        // Veículos fictícios (ajuda de custo, gerador, lava-jato etc.) — ignoram bloqueio de ordem duplicada
+        { table: 'vehicles',               column: 'permiteMultiplosAbastecimentos',  def: 'TINYINT(1) DEFAULT 0' },
         // FASE 2.4 — Toxicológico
         { table: 'employees',              column: 'exameToxicologicoVencimento',      def: 'DATE DEFAULT NULL' },
         // FASE 2.9 — Canais de envio de ordem para parceiros (posto)
