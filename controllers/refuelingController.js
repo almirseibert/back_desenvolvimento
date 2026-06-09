@@ -441,6 +441,35 @@ const createRefuelingOrder = async (req, res) => {
                     });
                 }
             }
+
+            // ─── Bloqueio: veículo a >7 dias em obra com operador placeholder ───
+            // Quando um veículo é alocado a uma obra sem o operador real definido,
+            // entra um placeholder (COLABORADOR, TESTE, MAK SERVIÇOS etc.). Se o
+            // operador real não for trocado em até 7 dias, suspende emissão de
+            // ordens até que alguém atualize o operador na tela de alocação.
+            const [placeholderRows] = await connection.execute(
+                `SELECT h.dataEntrada, e.nome AS employeeName
+                   FROM obras_historico_veiculos h
+                   INNER JOIN employees e ON e.id = h.employeeId
+                  WHERE h.veiculoId = ?
+                    AND h.dataSaida IS NULL
+                    AND e.isPlaceholder = 1
+                    AND h.dataEntrada <= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                  ORDER BY h.dataEntrada ASC
+                  LIMIT 1`,
+                [data.vehicleId]
+            );
+            if (placeholderRows.length > 0) {
+                const dias = Math.floor((Date.now() - new Date(placeholderRows[0].dataEntrada).getTime()) / 86400000);
+                await connection.rollback();
+                connection.release();
+                return res.status(409).json({
+                    error: `Bloqueado: veículo está há ${dias} dias na obra com operador fictício "${placeholderRows[0].employeeName}". Atualize o operador real antes de emitir ordens.`,
+                    code: 'PLACEHOLDER_OPERATOR_BLOCK',
+                    placeholderName: placeholderRows[0].employeeName,
+                    diasNaObra: dias,
+                });
+            }
         }
 
         let finalPartnerName = data.partnerName;

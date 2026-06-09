@@ -87,6 +87,20 @@ const TEMPLATES = {
         subject: `Documento vencido: ${p.placa || '—'}`,
         body: `🚨 Documento *${p.tipoDocumento || '—'}* do veículo *${p.placa || '—'}* venceu em ${fmtDate(p.vencimento)}.`,
     }),
+    operador_placeholder_obra_7dias: (p) => {
+        const lista = Array.isArray(p.veiculos) ? p.veiculos : [];
+        const linhas = lista.map(v =>
+            `• ${v.registroInterno || '—'} (${v.placa || '—'}) — obra "${v.obraNome || '—'}" — operador fictício *${v.operadorPlaceholder || '—'}* há *${v.dias}* dia(s)`
+        );
+        const titulo = `Veículos sem operador real em obra (>7 dias)`;
+        const body = `🚧 *${titulo}*\n\n` +
+            `Os veículos abaixo estão alocados em obra com um operador fictício/placeholder ` +
+            `(COLABORADOR, TESTE, MAK SERVIÇOS etc.) há mais de 7 dias. ` +
+            `Enquanto não for atualizado o operador real, novas ordens de abastecimento ficam *bloqueadas*.\n\n` +
+            (linhas.length > 0 ? linhas.join('\n') : '_(nenhum veículo identificado nesta varredura)_') +
+            `\n\nAtualize o operador em *Operacional → Alocação em Obra* de cada veículo.`;
+        return { subject: titulo, body };
+    },
 };
 
 const renderTemplate = (eventType, payload) => {

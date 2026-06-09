@@ -173,41 +173,44 @@ const createEmployee = async (req, res) => {
 
         const status = 'ativo';
 
+        const isPlaceholder = (data.isPlaceholder === 1 || data.isPlaceholder === true) ? 1 : 0;
+
         const values = [
-            newId, 
-            valOrNull(data.nome), 
-            valOrNull(data.vulgo), 
-            valOrNull(data.registroInterno), 
-            valOrNull(data.cpf), 
-            valOrNull(data.rg), 
-            dataNascimento, 
-            valOrNull(data.funcao), 
-            valOrNull(data.contato), 
+            newId,
+            valOrNull(data.nome),
+            valOrNull(data.vulgo),
+            valOrNull(data.registroInterno),
+            valOrNull(data.cpf),
+            valOrNull(data.rg),
+            dataNascimento,
+            valOrNull(data.funcao),
+            valOrNull(data.contato),
             valOrNull(data.email),
-            valOrNull(data.endereco), 
-            valOrNull(data.cidade), 
-            dataAdmissao, 
-            dataContratacao, 
+            valOrNull(data.endereco),
+            valOrNull(data.cidade),
+            dataAdmissao,
+            dataContratacao,
             status,
-            cnhNumero, 
-            cnhCategoria, 
+            cnhNumero,
+            cnhCategoria,
             cnhVencimento,
             cnhEmissao,
             exameToxicologicoVencimento,
-            aso, 
-            epi, 
-            cnhJson, 
-            certificados
+            aso,
+            epi,
+            cnhJson,
+            certificados,
+            isPlaceholder
         ];
 
         // Query sem a coluna telefone, mas com as novas colunas
         await connection.execute(
             `INSERT INTO employees (
-                id, nome, vulgo, registroInterno, cpf, rg, dataNascimento, funcao, contato, email, 
-                endereco, cidade, dataAdmissao, dataContratacao, status, 
+                id, nome, vulgo, registroInterno, cpf, rg, dataNascimento, funcao, contato, email,
+                endereco, cidade, dataAdmissao, dataContratacao, status,
                 cnhNumero, cnhCategoria, cnhVencimento, cnhEmissao, exameToxicologicoVencimento,
-                aso, epi, cnh, certificados
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                aso, epi, cnh, certificados, isPlaceholder
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             values
         );
 
@@ -280,29 +283,32 @@ const updateEmployee = async (req, res) => {
 
         let statusUpdateClause = "";
         
+        const isPlaceholder = (data.isPlaceholder === 1 || data.isPlaceholder === true) ? 1 : 0;
+
         let params = [
-            valOrNull(data.nome), 
-            valOrNull(data.vulgo), 
-            valOrNull(data.registroInterno), 
-            valOrNull(data.cpf), 
-            valOrNull(data.rg), 
-            dataNascimento, 
-            valOrNull(data.funcao), 
-            valOrNull(data.contato), 
-            valOrNull(data.email), 
-            valOrNull(data.endereco), 
-            valOrNull(data.cidade), 
-            dataAdmissao, 
-            cnhNumero, 
-            cnhCategoria, 
+            valOrNull(data.nome),
+            valOrNull(data.vulgo),
+            valOrNull(data.registroInterno),
+            valOrNull(data.cpf),
+            valOrNull(data.rg),
+            dataNascimento,
+            valOrNull(data.funcao),
+            valOrNull(data.contato),
+            valOrNull(data.email),
+            valOrNull(data.endereco),
+            valOrNull(data.cidade),
+            dataAdmissao,
+            cnhNumero,
+            cnhCategoria,
             cnhVencimento,
             cnhEmissao,
             exameToxicologicoVencimento,
-            aso, 
-            epi, 
-            cnhJson, 
-            certificados, 
-            dataDesligamento
+            aso,
+            epi,
+            cnhJson,
+            certificados,
+            dataDesligamento,
+            isPlaceholder
         ];
 
         if (data.status && typeof data.status === 'string' && !data.status.includes('{')) {
@@ -313,12 +319,12 @@ const updateEmployee = async (req, res) => {
         params.push(id);
 
         await connection.execute(
-            `UPDATE employees SET 
-                nome=?, vulgo=?, registroInterno=?, cpf=?, rg=?, dataNascimento=?, funcao=?, 
-                contato=?, email=?, endereco=?, cidade=?, 
-                dataAdmissao=?, 
+            `UPDATE employees SET
+                nome=?, vulgo=?, registroInterno=?, cpf=?, rg=?, dataNascimento=?, funcao=?,
+                contato=?, email=?, endereco=?, cidade=?,
+                dataAdmissao=?,
                 cnhNumero=?, cnhCategoria=?, cnhVencimento=?, cnhEmissao=?, exameToxicologicoVencimento=?,
-                aso=?, epi=?, cnh=?, certificados=?, dataDesligamento=?
+                aso=?, epi=?, cnh=?, certificados=?, dataDesligamento=?, isPlaceholder=?
                 ${statusUpdateClause}
              WHERE id=?`,
             params

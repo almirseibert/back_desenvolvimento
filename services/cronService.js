@@ -384,6 +384,44 @@ cron.schedule('* * * * *', async () => {
                     }
                 } catch (e) { console.error('❌ [CRON] Erro Documentos Veículo:', e.message); }
 
+                // --- F. VEÍCULOS EM OBRA COM OPERADOR PLACEHOLDER (>7 DIAS) ---
+                // Lista veículos cujo operador atual na obra é "fictício" (COLABORADOR,
+                // TESTE, MAK SERVIÇOS etc.) e que estão assim há mais de 7 dias.
+                // Dispara um único evento agregando todos numa só mensagem para
+                // não inundar o destinatário (Plinio, configurado em notification_targets).
+                try {
+                    const [placeholders] = await db.query(`
+                        SELECT v.id, v.placa, v.registroInterno,
+                               h.dataEntrada, e.nome AS operadorPlaceholder,
+                               o.nome AS obraNome,
+                               DATEDIFF(NOW(), h.dataEntrada) AS dias
+                          FROM obras_historico_veiculos h
+                          INNER JOIN vehicles  v ON v.id = h.veiculoId
+                          INNER JOIN employees e ON e.id = h.employeeId
+                          LEFT  JOIN obras     o ON o.id = h.obraId
+                         WHERE h.dataSaida IS NULL
+                           AND e.isPlaceholder = 1
+                           AND h.dataEntrada <= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                         ORDER BY h.dataEntrada ASC
+                    `);
+
+                    if (placeholders.length > 0) {
+                        dispatchAsync('operador_placeholder_obra_7dias', {
+                            veiculos: placeholders.map(p => ({
+                                id: p.id,
+                                placa: p.placa,
+                                registroInterno: p.registroInterno,
+                                obraNome: p.obraNome,
+                                operadorPlaceholder: p.operadorPlaceholder,
+                                dataEntrada: p.dataEntrada,
+                                dias: Number(p.dias) || 0,
+                            })),
+                            total: placeholders.length,
+                        });
+                        console.log(`📋 [CRON] ${placeholders.length} veículo(s) com operador placeholder >7d.`);
+                    }
+                } catch (e) { console.error('❌ [CRON] Erro Operador Placeholder >7d:', e.message); }
+
                 console.log('✅ [CRON] Rotina diária concluída com sucesso sem erros.');
             } catch (error) {
                 console.error('❌ [CRON] Erro grave na rotina diária:', error);

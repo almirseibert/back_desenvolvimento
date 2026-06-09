@@ -27,6 +27,9 @@ const http = require('http');
         { table: 'vehicles',               column: 'percentual_tolerancia',           def: 'DECIMAL(5,2) DEFAULT 20.00' },
         // Veículos fictícios (ajuda de custo, gerador, lava-jato etc.) — ignoram bloqueio de ordem duplicada
         { table: 'vehicles',               column: 'permiteMultiplosAbastecimentos',  def: 'TINYINT(1) DEFAULT 0' },
+        // Funcionários "placeholder" (COLABORADOR, TESTE, MAK SERVIÇOS etc.) usados
+        // como operador temporário ao alocar veículo em obra antes do operador real.
+        { table: 'employees',              column: 'isPlaceholder',                   def: 'TINYINT(1) DEFAULT 0' },
         // FASE 2.4 — Toxicológico
         { table: 'employees',              column: 'exameToxicologicoVencimento',      def: 'DATE DEFAULT NULL' },
         // FASE 2.9 — Canais de envio de ordem para parceiros (posto)
@@ -81,6 +84,24 @@ const http = require('http');
         await db.query(`UPDATE partners SET tipo_parceiro = 'posto' WHERE tipo_parceiro IS NULL OR tipo_parceiro = ''`);
     } catch (e) {
         console.warn('[migration] partners.tipo_parceiro ENUM:', e.message);
+    }
+
+    // ───── Seed de funcionários "placeholder" conhecidos ─────
+    // Marca como isPlaceholder=1 funcionários cujo nome bate com os usados
+    // historicamente como operador temporário ao alocar veículo a uma obra.
+    // Admin pode marcar mais funcionários manualmente pelo cadastro.
+    try {
+        await db.query(`
+            UPDATE employees
+            SET isPlaceholder = 1
+            WHERE isPlaceholder = 0
+              AND UPPER(TRIM(nome)) IN (
+                'COLABORADOR', 'TESTE', 'FUNC. TESTE', 'FUNC TESTE',
+                'FUNCIONÁRIO TESTE', 'FUNCIONARIO TESTE', 'MAK SERVIÇOS', 'MAK SERVICOS'
+              )
+        `);
+    } catch (e) {
+        console.warn('[migration] seed employees.isPlaceholder:', e.message);
     }
 
     console.log('✅ Migração de schema concluída.');
