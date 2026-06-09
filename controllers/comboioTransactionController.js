@@ -9,6 +9,21 @@ const { ensureOpenComboioPeriod, getActivePeriodId } = require('../utils/comboio
 
 // --- HELPERS DE SANITIZAÇÃO ---
 const sanitize = (value) => (value === undefined || value === 'undefined' || value === '' ? null : value);
+
+// Converte data enviada pelo frontend para Date no horário real BRT (GMT-3).
+// Se a string já tiver 'T' (inclui horário), usa diretamente; caso contrário
+// combina a data fornecida com o horário atual em BRT para evitar o efeito
+// UTC→BRT que transformava datas em "09:00:00".
+const parseDateBRT = (d) => {
+    if (!d) return new Date();
+    const s = String(d);
+    if (s.includes('T')) return new Date(s);
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const brt = new Date(now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+    return new Date(`${s}T${pad(brt.getHours())}:${pad(brt.getMinutes())}:${pad(brt.getSeconds())}-03:00`);
+};
+
 const sanitizeNumber = (value) => {
     if (value === undefined || value === null || value === '' || isNaN(value)) return null;
     return parseFloat(value);
@@ -330,10 +345,12 @@ const createEntradaTransaction = async (req, res) => {
         // Nome do comboio (para a notificação/ordem)
         let comboioLabel = 'Comboio';
         let comboioModelo = '';
+        let comboioRegistroInterno = '';
         if (comboioVehicleId) {
             const [vRows] = await connection.execute('SELECT registroInterno, placa, modelo, marca FROM vehicles WHERE id = ?', [comboioVehicleId]);
             if (vRows.length > 0) {
-                comboioLabel = `${vRows[0].registroInterno || ''} - ${vRows[0].placa || ''}`.trim();
+                comboioRegistroInterno = vRows[0].registroInterno || '';
+                comboioLabel = `${comboioRegistroInterno} - ${vRows[0].placa || ''}`.trim();
                 comboioModelo = `${vRows[0].marca || ''} ${vRows[0].modelo || ''}`.trim();
             }
         }
@@ -351,13 +368,13 @@ const createEntradaTransaction = async (req, res) => {
         const refuelingData = {
             id: refuelingId,
             authNumber: newAuthNumber,
-            vehicleId: comboioVehicleId, 
+            vehicleId: comboioVehicleId,
             partnerId: partnerId,
             partnerName: partnerName,
             employeeId: employeeId,
             obraId: obraId || null,
             fuelType: fuelType,
-            data: new Date(date),
+            data: parseDateBRT(date),
             status: 'Concluída', 
             isFillUp: 0,
             litrosLiberados: safeLiters,
@@ -390,7 +407,7 @@ const createEntradaTransaction = async (req, res) => {
             id: req.body.id || crypto.randomUUID(),
             authNumber: newAuthNumber,
             type: 'entrada',
-            date: new Date(date),
+            date: parseDateBRT(date),
             comboioVehicleId: sanitize(comboioVehicleId),
             partnerId: sanitize(partnerId),
             partnerName: sanitize(partnerName),
@@ -451,6 +468,7 @@ const createEntradaTransaction = async (req, res) => {
                 valorTotal,
                 invoiceNumber: invoiceNumber || null,
                 partnerName,
+                registroInterno: comboioRegistroInterno,
                 vehicleLabel: comboioLabel,
                 vehicleModelo: comboioModelo,
                 employeeName,

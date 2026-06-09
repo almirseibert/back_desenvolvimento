@@ -53,6 +53,7 @@ const dispatchOrderToPartner = async (refuelingId) => {
                 pricePerLiter: r.pricePerLiter,
                 invoiceNumber: r.invoiceNumber,
                 partnerName: r.partnerName,
+                registroInterno: r.registroInterno || '',
                 vehicleLabel: `${r.registroInterno || ''} - ${r.placa || ''}`.trim(),
                 vehicleModelo: `${r.marca || ''} ${r.modelo || ''}`.trim(),
                 employeeName: r.employeeName || '',
@@ -373,8 +374,16 @@ const createRefuelingOrder = async (req, res) => {
 
         let dataAbastecimento = new Date();
         if (data.date) {
-             const dateStr = data.date.toString().includes('T') ? data.date : `${data.date}T12:00:00`;
-             dataAbastecimento = new Date(dateStr);
+            const dateStr = data.date.toString();
+            if (dateStr.includes('T')) {
+                dataAbastecimento = new Date(dateStr);
+            } else {
+                // Data sem horário — usa o horário real atual em BRT (GMT-3)
+                const now = new Date();
+                const pad = n => String(n).padStart(2, '0');
+                const brt = new Date(now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+                dataAbastecimento = new Date(`${dateStr}T${pad(brt.getHours())}:${pad(brt.getMinutes())}:${pad(brt.getSeconds())}-03:00`);
+            }
         }
 
         let finalPartnerName = data.partnerName;

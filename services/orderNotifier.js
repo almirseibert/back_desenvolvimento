@@ -25,11 +25,26 @@ const publicBase = () => {
     return `http://localhost:${process.env.PORT || 3001}`;
 };
 
+// Formata a data em YYYY-MM-DD no fuso BRT (GMT-3).
+const fmtDateISO = (d) => {
+    try {
+        const date = d ? new Date(d) : new Date();
+        const brt = new Date(date.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+        const y = brt.getFullYear();
+        const m = String(brt.getMonth() + 1).padStart(2, '0');
+        const day = String(brt.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+    } catch { return 'data'; }
+};
+
 // Gera o PDF da ordem, salva em disco e devolve { buffer, url, filename, filepath }.
+// Nome: Autorizacao_<authNumber>_<registroInterno>_<YYYY-MM-DD>.pdf
 const buildOrderPdfArtifact = async (order) => {
     const buffer = await generateOrderPdf(order);
-    const safeAuth = String(order.authNumber || 'TEMP').replace(/\W+/g, '');
-    const filename = `ordem-${safeAuth}-${Date.now()}.pdf`;
+    const authNum = String(order.authNumber || 'TEMP').replace(/\W+/g, '');
+    const ri = String(order.registroInterno || '').replace(/[^\w-]/g, '') || 'V';
+    const dateStr = fmtDateISO(order.date);
+    const filename = `Autorizacao_${authNum}_${ri}_${dateStr}.pdf`;
     const filepath = path.join(ORDERS_PDF_DIR, filename);
     fs.writeFileSync(filepath, buffer);
     const url = `${publicBase()}/uploads/ordens/${filename}`;
@@ -135,13 +150,19 @@ const sendToPartner = async (partner, order, opts = {}) => {
     if (wantEm && partner.email) {
         try {
             const attachments = pdf?.buffer ? [{
-                filename: pdf.filename || `ordem-${order.authNumber || 'TEMP'}.pdf`,
+                filename: pdf.filename || `Autorizacao_${order.authNumber || 'TEMP'}.pdf`,
                 content: pdf.buffer,
                 contentType: 'application/pdf',
             }] : undefined;
+            const authNum = String(order.authNumber || '').padStart(6, '0');
+            const ri = order.registroInterno || '';
+            const dateStr = fmtDateISO(order.date);
+            const emailSubject = ri
+                ? `Autorizacao_${authNum}_${ri}_${dateStr}`
+                : `Ordem de Abastecimento Nº ${authNum}`;
             const r = await sendEmail({
                 to: partner.email,
-                subject: `Ordem de Abastecimento Nº ${String(order.authNumber || '').padStart(6, '0')}`,
+                subject: emailSubject,
                 text: buildOrderText(order),
                 html: buildOrderHtml(order),
                 attachments,
