@@ -25,7 +25,7 @@ const login = async (req, res) => {
         let rows;
         try {
             [rows] = await db.query(
-                'SELECT id, name, email, username, password, role, user_type, status, canAccessRefueling, bloqueado_abastecimento, tentativas_falhas_abastecimento FROM users WHERE email = ? OR username = ?',
+                'SELECT id, name, email, username, password, role, user_type, status, canAccessRefueling, bloqueado_abastecimento, tentativas_falhas_abastecimento, employeeId FROM users WHERE email = ? OR username = ?',
                 [loginIdentifier, loginIdentifier]
             );
         } catch (colErr) {
@@ -75,7 +75,8 @@ const login = async (req, res) => {
                 user_type: user.user_type,
                 status: user.status,
                 canAccessRefueling: user.canAccessRefueling,
-                bloqueado_abastecimento: user.bloqueado_abastecimento
+                bloqueado_abastecimento: user.bloqueado_abastecimento,
+                employeeId: user.employeeId || null
             }
         });
 
@@ -140,7 +141,7 @@ const getMe = async (req, res) => {
         let rows;
         try {
             [rows] = await db.query(
-                'SELECT id, name, email, username, role, user_type, status, canAccessRefueling, bloqueado_abastecimento FROM users WHERE id = ?',
+                'SELECT id, name, email, username, role, user_type, status, canAccessRefueling, bloqueado_abastecimento, employeeId FROM users WHERE id = ?',
                 [req.user.id]
             );
         } catch (colErr) {

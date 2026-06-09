@@ -90,6 +90,14 @@ const buildOrderText = (order) => {
     if (order.obraName)      lines.push(`🏗️ Obra: ${order.obraName}`);
     if (order.employeeName)  lines.push(`👤 Funcionário: ${order.employeeName}`);
     if (order.partnerName)   lines.push(`🏪 Posto: ${order.partnerName}`);
+    if (order.needsArla) {
+        const arlaQt = order.isFillUpArla ? 'Completar Tanque' : `${parseFloat(order.litrosLiberadosArla || 0).toFixed(2)} L`;
+        lines.push(`🧪 Arla 32 Autorizado: ${arlaQt}`);
+    }
+    if (order.outros) {
+        const valor = order.outrosValor ? ` (${fmtMoney(order.outrosValor)})` : '';
+        lines.push(`➕ Outros: ${order.outros}${valor}`);
+    }
     if (order.observacao)    lines.push(``, `📝 ${order.observacao}`);
     lines.push(``, `_Mensagem automática — Sistema MAK Frotas_`);
     return lines.join('\n');
@@ -114,6 +122,8 @@ const buildOrderHtml = (order) => {
             ${row('Obra',         order.obraName)}
             ${row('Funcionário',  order.employeeName)}
             ${row('Posto',        order.partnerName)}
+            ${order.needsArla ? row('Arla 32 Autorizado', order.isFillUpArla ? 'Completar Tanque' : `${parseFloat(order.litrosLiberadosArla || 0).toFixed(2)} L`) : ''}
+            ${order.outros ? row('Outros Itens/Observação', `${order.outros}${order.outrosValor ? ` (${fmtMoney(order.outrosValor)})` : ''}`) : ''}
             ${row('Observação',   order.observacao)}
         </table>
         <p style="color:#9ca3af;font-size:11px;margin-top:12px">Mensagem automática — Sistema MAK Frotas</p>

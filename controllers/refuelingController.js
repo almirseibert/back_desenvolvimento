@@ -18,6 +18,8 @@ const dispatchOrderToPartner = async (refuelingId) => {
         const [[r]] = await db.execute(
             `SELECT r.id, r.authNumber, r.data, r.partnerId, r.partnerName,
                     r.fuelType, r.litrosLiberados, r.isFillUp, r.pricePerLiter, r.invoiceNumber,
+                    r.needsArla, r.isFillUpArla, r.litrosLiberadosArla,
+                    r.outros, r.outrosValor,
                     r.odometro, r.horimetro, r.createdBy,
                     v.registroInterno, v.placa, v.marca, v.modelo, v.tipo,
                     e.nome AS employeeName,
@@ -60,6 +62,11 @@ const dispatchOrderToPartner = async (refuelingId) => {
                 obraName: r.obraName || '',
                 readingLabel,
                 readingValue,
+                needsArla: !!r.needsArla,
+                isFillUpArla: !!r.isFillUpArla,
+                litrosLiberadosArla: r.litrosLiberadosArla,
+                outros: r.outros,
+                outrosValor: r.outrosValor,
                 issuer,
             },
         }).then(result => {
@@ -135,10 +142,12 @@ const parseRefuelingRows = (rows) => {
         confirmedBy: parseJsonSafe(row.confirmedBy),
         editedBy: parseJsonSafe(row.editedBy),
         litrosAbastecidos: row.litrosAbastecidos ? parseFloat(row.litrosAbastecidos) : 0,
+        litrosAbastecidosArla: row.litrosAbastecidosArla ? parseFloat(row.litrosAbastecidosArla) : 0,
         pricePerLiter: row.pricePerLiter ? parseFloat(row.pricePerLiter) : 0,
+        pricePerLiterArla: row.pricePerLiterArla ? parseFloat(row.pricePerLiterArla) : 0,
         outrosValor: row.outrosValor ? parseFloat(row.outrosValor) : 0,
         outrosGeraValor: !!row.outrosGeraValor,
-        invoiceNumber: row.invoiceNumber || null 
+        invoiceNumber: row.invoiceNumber || null
     }));
 };
 
@@ -160,12 +169,13 @@ const updateMonthlyExpense = async (connection, obraId, partnerId, fuelType, dat
 
     const querySum = `
         SELECT SUM(
-            (COALESCE(litrosAbastecidos, 0) * COALESCE(pricePerLiter, 0)) + 
+            (COALESCE(litrosAbastecidos, 0) * COALESCE(pricePerLiter, 0)) +
+            (COALESCE(litrosAbastecidosArla, 0) * COALESCE(pricePerLiterArla, 0)) +
             COALESCE(outrosValor, 0)
         ) as total
         FROM refuelings
-        WHERE obraId = ? 
-          AND partnerId = ? 
+        WHERE obraId = ?
+          AND partnerId = ?
           AND fuelType = ?
           AND data BETWEEN ? AND ?
           AND status = 'Concluída' -- Importante: Somar apenas concluídas para não duplicar valores pendentes
@@ -383,6 +393,43 @@ const createRefuelingOrder = async (req, res) => {
                 const pad = n => String(n).padStart(2, '0');
                 const brt = new Date(now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
                 dataAbastecimento = new Date(`${dateStr}T${pad(brt.getHours())}:${pad(brt.getMinutes())}:${pad(brt.getSeconds())}-03:00`);
+            }
+        }
+
+        // ─── Anti-duplicidade: bloqueia 2ª ordem aberta para o mesmo veículo ──
+        // Exceção: data em fim-de-semana ou feriado nacional fixo (antecipação
+        // legítima para obras que operam quando o escritório está fechado).
+        // FOR UPDATE serializa contra criações concorrentes dentro da transação.
+        if (data.vehicleId) {
+            const FERIADOS_BR_FIXOS = new Set([
+                '01-01', '04-21', '05-01', '09-07',
+                '10-12', '11-02', '11-15', '12-25'
+            ]);
+            const dow = dataAbastecimento.getDay();
+            const mmdd = dataAbastecimento.toISOString().slice(5, 10);
+            const isWeekendOrHoliday = dow === 0 || dow === 6 || FERIADOS_BR_FIXOS.has(mmdd);
+
+            if (!isWeekendOrHoliday) {
+                const [openRows] = await connection.execute(
+                    `SELECT id, authNumber, status
+                       FROM refuelings
+                      WHERE vehicleId = ?
+                        AND status NOT IN ('Concluída','Concluida','Cancelada','Negada','Baixada')
+                      LIMIT 1
+                      FOR UPDATE`,
+                    [data.vehicleId]
+                );
+                if (openRows.length > 0) {
+                    await connection.rollback();
+                    connection.release();
+                    return res.status(409).json({
+                        error: `Já existe ordem em aberto Nº ${openRows[0].authNumber} (${openRows[0].status}) para este veículo. Conclua ou cancele antes de emitir outra.`,
+                        code: 'DUPLICATE_OPEN_ORDER',
+                        openOrderId: openRows[0].id,
+                        openOrderAuthNumber: openRows[0].authNumber,
+                        openOrderStatus: openRows[0].status
+                    });
+                }
             }
         }
 
@@ -604,15 +651,16 @@ const updateRefuelingOrder = async (req, res) => {
 
 const confirmRefuelingOrder = async (req, res) => {
     const { id } = req.params;
-    const { 
-        litrosAbastecidos, 
-        litrosAbastecidosArla, 
-        pricePerLiter, 
-        confirmedReading, 
-        confirmedBy, 
-        outrosValor, 
-        invoiceNumber, 
-        updatePartnerPrice 
+    const {
+        litrosAbastecidos,
+        litrosAbastecidosArla,
+        pricePerLiter,
+        pricePerLiterArla,
+        confirmedReading,
+        confirmedBy,
+        outrosValor,
+        invoiceNumber,
+        updatePartnerPrice
     } = req.body;
     
     const connection = await db.getConnection();
@@ -650,14 +698,20 @@ const confirmRefuelingOrder = async (req, res) => {
         }
 
         const safePrice = safeNum(pricePerLiter, true);
-        
+        const safePriceArla = safeNum(pricePerLiterArla, true);
+
         if (order.partnerId && safePrice > 0 && order.fuelType && updatePartnerPrice === true) {
             const priceQuery = `
-                INSERT INTO partner_fuel_prices (partnerId, fuelType, price) 
-                VALUES (?, ?, ?) 
+                INSERT INTO partner_fuel_prices (partnerId, fuelType, price)
+                VALUES (?, ?, ?)
                 ON DUPLICATE KEY UPDATE price = VALUES(price)
             `;
             await connection.execute(priceQuery, [order.partnerId, order.fuelType, safePrice]);
+
+            // Atualiza também o preço do Arla cadastrado para o posto, se informado
+            if (order.needsArla && safePriceArla > 0) {
+                await connection.execute(priceQuery, [order.partnerId, 'Arla', safePriceArla]);
+            }
         }
 
         const orderUpdate = {
@@ -665,6 +719,7 @@ const confirmRefuelingOrder = async (req, res) => {
             litrosAbastecidos: safeNum(litrosAbastecidos, true),
             litrosAbastecidosArla: safeNum(litrosAbastecidosArla, true),
             pricePerLiter: safePrice,
+            pricePerLiterArla: safePriceArla,
             confirmedBy: JSON.stringify(confirmedBy),
             outrosValor: safeNum(outrosValor, true),
             invoiceNumber: invoiceNumber ? invoiceNumber.toString().trim() : null,

@@ -78,13 +78,22 @@ const generateOrderPdf = async (order = {}) => {
         if (order.valorTotal)    rows.push(['Valor Total',     `R$ ${parseFloat(order.valorTotal).toFixed(2)}`]);
         if (order.invoiceNumber) rows.push(['Nota Fiscal (NF)', String(order.invoiceNumber)]);
         if (order.obraName)      rows.push(['Obra/Centro de Custo', order.obraName]);
+        if (order.needsArla) {
+            rows.push(['Arla 32 Autorizado',
+                order.isFillUpArla ? 'Completar Tanque' : `${parseFloat(order.litrosLiberadosArla || 0).toFixed(2)} L`]);
+        }
+        if (order.outros) {
+            const valor = order.outrosValor ? ` (R$ ${parseFloat(order.outrosValor).toFixed(2)})` : '';
+            rows.push(['Outros Itens/Observação', `${order.outros}${valor}`]);
+        }
         if (order.observacao)    rows.push(['Observação', order.observacao]);
         rows.push(['Emitido por', order.issuer || 'Sistema MAK Frotas']);
 
         const tableTop = 105;
         const labelWidth = 160;
         const valueWidth = pageWidth - margin * 2 - labelWidth;
-        const rowHeight = 22;
+        const rowHeight = 18;
+        const fontSize = 9;
 
         rows.forEach((r, i) => {
             const y = tableTop + i * rowHeight;
@@ -92,22 +101,22 @@ const generateOrderPdf = async (order = {}) => {
             if (i % 2 === 0) {
                 doc.rect(margin, y, pageWidth - margin * 2, rowHeight).fill('#f3f4f6').fillColor('black');
             }
-            doc.font('Helvetica-Bold').fontSize(10).fillColor('#374151')
-                .text(r[0], margin + 6, y + 6, { width: labelWidth - 12 });
-            doc.font('Helvetica').fontSize(10).fillColor('#111827')
-                .text(String(r[1] || ''), margin + labelWidth, y + 6, { width: valueWidth - 6 });
+            doc.font('Helvetica-Bold').fontSize(fontSize).fillColor('#374151')
+                .text(r[0], margin + 6, y + 5, { width: labelWidth - 12 });
+            doc.font('Helvetica').fontSize(fontSize).fillColor('#111827')
+                .text(String(r[1] || ''), margin + labelWidth, y + 5, { width: valueWidth - 6 });
         });
 
         // ── Rodapé / Disclaimers ─────────────────────────────────────
-        const footerY = tableTop + rows.length * rowHeight + 30;
-        doc.font('Helvetica-Oblique').fontSize(8).fillColor('#4b5563');
+        const footerY = tableTop + rows.length * rowHeight + 8;
+        doc.font('Helvetica-Oblique').fontSize(7).fillColor('#4b5563');
         doc.text(
             '*A presente ordem de abastecimento é válida exclusivamente para a placa/RE indicada e para o tipo de combustível previamente autorizado.',
             margin, footerY, { width: pageWidth - margin * 2 }
         );
         doc.text(
             '*Estão autorizados somente os itens discriminados acima.',
-            margin, footerY + 18, { width: pageWidth - margin * 2 }
+            margin, footerY + 14, { width: pageWidth - margin * 2 }
         );
 
         // Linha tracejada de corte (meio da página)
