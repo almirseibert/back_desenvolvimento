@@ -58,7 +58,7 @@ const whatsappService = {
         return data;
     },
 
-    async enviarMensagem(numeroDestino, nomeDestinatario, motivo, mensagem, anexoUrl = null) {
+    async enviarMensagem(numeroDestino, nomeDestinatario, motivo, mensagem, anexoUrl = null, anexoFilename = null) {
         if (!WA_URL || !WA_KEY) {
             console.warn(`⚠️ Ignorando envio para ${nomeDestinatario} (WhatsApp não configurado).`);
             return null;
@@ -70,6 +70,7 @@ const whatsappService = {
         try {
             const payload = { number: numeroFormatado, message: mensagem };
             if (anexoUrl) payload.documentUrl = anexoUrl;
+            if (anexoFilename) payload.documentFilename = anexoFilename;
 
             const { data } = await axios.post(
                 `${WA_URL}/send`,

@@ -251,7 +251,7 @@ app.post('/send', async (req, res) => {
         return res.status(503).json({ error: `WhatsApp não está pronto. Status atual: ${clientStatus}` });
     }
 
-    const { number, message, documentUrl } = req.body;
+    const { number, message, documentUrl, documentFilename } = req.body;
 
     try {
         // Suporta @c.us — usa o sufixo original se já vier com @
@@ -298,7 +298,15 @@ app.post('/send', async (req, res) => {
             try {
                 console.log(`📎 Baixando anexo de: ${documentUrl}`);
                 const media = await MessageMedia.fromUrl(documentUrl, { unsafeMime: true });
-                media.filename = 'Ordem_Abastecimento_FrotasMAK.pdf';
+                // Prioriza o nome enviado pelo backend (ex: Autorizacao_<n>_<RI>_<data>.pdf).
+                // Senão tenta extrair do final da URL. Último fallback: nome genérico.
+                const fromUrl = (() => {
+                    try {
+                        const tail = decodeURIComponent(documentUrl.split('?')[0].split('/').pop() || '');
+                        return tail && tail.toLowerCase().endsWith('.pdf') ? tail : null;
+                    } catch { return null; }
+                })();
+                media.filename = documentFilename || fromUrl || 'Ordem_Abastecimento_FrotasMAK.pdf';
                 await client.sendMessage(chatId, media, { sendMediaAsDocument: true });
                 pdfStatus = 'enviado';
             } catch (pdfErr) {

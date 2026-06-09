@@ -155,21 +155,29 @@ app.post('/send', async (req, res) => {
         return res.status(503).json({ error: `WhatsApp não está pronto. Status atual: ${clientStatus}` });
     }
 
-    const { number, message, documentUrl } = req.body;
-    
+    const { number, message, documentUrl, documentFilename } = req.body;
+
     try {
         const chatId = `${number}@c.us`;
-        
+
         const resp = await client.sendMessage(chatId, message);
         const messageId = resp?.id?._serialized || null;
 
         if (documentUrl) {
             console.log(`📎 Baixando anexo de: ${documentUrl}`);
             const media = await MessageMedia.fromUrl(
-                documentUrl.replace('http://', 'https://'), 
+                documentUrl.replace('http://', 'https://'),
                 { unsafeMime: true }
             );
-            media.filename = 'Documento_FrotasMAK.pdf';
+            // Prioriza o nome enviado pelo backend (ex: Autorizacao_<n>_<RI>_<data>.pdf).
+            // Senão tenta extrair do final da URL. Como ultimo fallback, nome generico.
+            const fromUrl = (() => {
+                try {
+                    const tail = decodeURIComponent(documentUrl.split('?')[0].split('/').pop() || '');
+                    return tail && tail.toLowerCase().endsWith('.pdf') ? tail : null;
+                } catch { return null; }
+            })();
+            media.filename = documentFilename || fromUrl || 'Documento_FrotasMAK.pdf';
             await client.sendMessage(chatId, media, { sendMediaAsDocument: true });
         }
 

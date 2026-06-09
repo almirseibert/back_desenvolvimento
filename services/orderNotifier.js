@@ -148,7 +148,8 @@ const sendToPartner = async (partner, order, opts = {}) => {
                 partner.razaoSocial || 'Posto',
                 `ordem_${order.tipo || 'abastecimento'}_${order.authNumber || ''}`,
                 buildOrderText(order),
-                pdf?.url || null
+                pdf?.url || null,
+                pdf?.filename || null
             );
             out.whatsapp = pdf?.url ? 'enviado (com PDF)' : 'enviado';
         } catch (e) {
