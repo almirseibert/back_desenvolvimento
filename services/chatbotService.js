@@ -466,7 +466,7 @@ async function exibirMenuVeiculo(session, from) {
         const reLabel = vSugerido.registroInterno ? ` (RE ${formatRI(vSugerido.registroInterno)})` : '';
         msgVeiculo +=
             `*Veículo associado ao seu cadastro:*\n` +
-            `🚗 *${vSugerido.placa}*${reLabel}${vSugerido.modelo ? ` — ${vSugerido.modelo}` : ''}\n\n` +
+            `*${vSugerido.placa}*${reLabel}${vSugerido.modelo ? ` — ${vSugerido.modelo}` : ''}\n\n` +
             `Digite *1* para confirmar, ou informe a *placa* ou *RE* de outro veículo.\n\n`;
     } else {
         const veiculos = await buscarVeiculosAtivos();
@@ -511,7 +511,7 @@ async function exibirMenuObra(session, from) {
         ? obras.map((o, i) => `${i + 1}. *${o.nome}*`).join('\n')
         : '_Nenhuma obra ativa encontrada._';
     await responder(from,
-        `✅ Veículo: *${session.session_data?.veiculo_placa || ''}*\n\n` +
+        `Veículo: *${session.session_data?.veiculo_placa || ''}*\n\n` +
         `*Passo 2/7 — Obra/Projeto*\n` +
         `Qual obra está sendo atendida?\n\n` +
         `${listaObras}\n\n` +
@@ -527,7 +527,7 @@ async function exibirMenuPosto(session, from) {
         ? postos.map((p, i) => `${i + 1}. *${p.razaoSocial}*`).join('\n')
         : '_Nenhum posto cadastrado._';
     await responder(from,
-        `✅ Obra: *${session.session_data?.obra_nome || ''}*\n\n` +
+        `Obra: *${session.session_data?.obra_nome || ''}*\n\n` +
         `*Passo 3/7 — Posto de Combustível*\n` +
         `Qual posto será utilizado?\n\n` +
         `${listaPostos}\n\n` +
@@ -537,7 +537,7 @@ async function exibirMenuPosto(session, from) {
 
 async function exibirMenuCombustivel(session, from) {
     await responder(from,
-        `✅ Posto: *${session.session_data?.posto_nome || ''}*\n\n` +
+        `Posto: *${session.session_data?.posto_nome || ''}*\n\n` +
         `*Passo 4/7 — Combustível*\n` +
         `Qual tipo de combustível?\n\n` +
         `1️⃣ *DIESEL S10*\n2️⃣ *DIESEL S500*\n3️⃣ *GASOLINA COMUM*\n\n` +
@@ -568,7 +568,7 @@ async function exibirMenuLeitura(session, from) {
     }
 
     await responder(from,
-        `✅ Combustível: *${session.session_data?.tipo_combustivel || ''}*\n\n` +
+        `Combustível: *${session.session_data?.tipo_combustivel || ''}*\n\n` +
         `*Passo 5/7 — ${tipoLabel}*\n` +
         `Qual a leitura atual do *${tipoLabel.toLowerCase()}* do veículo?\n` +
         `${ultimaLeituraMsg}\n` +
@@ -583,7 +583,7 @@ async function exibirMenuLitragem(session, from) {
     const unidade      = usaHorimetro ? 'h' : 'km';
     const leituraFmt   = leitura ? leitura.toLocaleString('pt-BR') : '—';
     await responder(from,
-        `✅ ${usaHorimetro ? 'Horímetro' : 'Odômetro'}: *${leituraFmt} ${unidade}*\n\n` +
+        `${usaHorimetro ? 'Horímetro' : 'Odômetro'}: *${leituraFmt} ${unidade}*\n\n` +
         `*Passo 6/7 — Quantidade*\n` +
         `Quantos litros serão abastecidos?\n\n` +
         `Digite o número de litros (ex: *150*) ou envie *cheio* para tanque cheio.\n\n` +
@@ -594,7 +594,7 @@ async function exibirMenuLitragem(session, from) {
 async function exibirMenuFoto(from) {
     await responder(from,
         `*Passo 7/7 — Foto do Painel*\n\n` +
-        `📸 Envie uma *foto do painel* do veículo.\n\n` +
+        `Envie uma *foto do painel* do veículo.\n\n` +
         `0️⃣ *Voltar*`
     );
 }
@@ -652,7 +652,7 @@ async function avancarParaObra(session, from) {
         const obra = obras[0];
         const d = { ...session.session_data, obra_id: obra.id, obra_nome: obra.nome };
         await updateSession(session.id, 'posto', d);
-        await responder(from, `✅ Obra *${obra.nome}* selecionada automaticamente.`);
+        await responder(from, `Obra *${obra.nome}* selecionada automaticamente.`);
         await exibirMenuPosto({ ...session, step: 'posto', session_data: d }, from);
         return;
     }
@@ -683,8 +683,8 @@ async function handleVeiculo(session, from, body) {
             };
             await updateSession(session.id, 'leitura', d);
             await responder(from,
-                `↩️ *Repetindo última solicitação:*\n` +
-                `🚗 ${ultima.veiculo_placa} | 🏗️ ${ultima.obra_nome} | ⛽ ${ultima.tipo_combustivel}\n\n` +
+                `*Repetindo última solicitação:*\n` +
+                `${ultima.veiculo_placa} | 🏗️ ${ultima.obra_nome} | ⛽ ${ultima.tipo_combustivel}\n\n` +
                 `Informe a leitura atual e a quantidade de litros.`
             );
             await exibirMenuLeitura({ ...session, step: 'leitura', session_data: d }, from);
@@ -989,17 +989,17 @@ async function handleFoto(session, from, body, hasMedia, mediaBase64, mediaMimet
     const qtdLabel = d.flag_tanque_cheio ? '*Tanque Cheio*' : `*${d.litragem} litros*`;
 
     await responder(from,
-        `✅ Foto recebida!\n\n` +
+        `Foto recebida!\n\n` +
         `*Resumo da Solicitação:*\n\n` +
-        `🚗 Veículo: *${d.veiculo_placa}*\n` +
-        `🏗️ Obra: *${d.obra_nome}*\n` +
-        `⛽ Posto: *${d.posto_nome || '-'}*\n` +
-        `🔥 Combustível: *${d.tipo_combustivel}*\n` +
-        `📊 ${leituraLabel}\n` +
-        `🪣 Quantidade: ${qtdLabel}\n\n` +
-        `✅ *1* — Confirmar e enviar\n` +
-        `❌ *2* — Cancelar\n` +
-        `↩️ *0* — Voltar\n\n` +
+        `Veículo: *${d.veiculo_placa}*\n` +
+        `Obra: *${d.obra_nome}*\n` +
+        `Posto: *${d.posto_nome || '-'}*\n` +
+        `Combustível: *${d.tipo_combustivel}*\n` +
+        `${leituraLabel}\n` +
+        `Quantidade: ${qtdLabel}\n\n` +
+        `*1* — Confirmar e enviar\n` +
+        `*2* — Cancelar\n` +
+        `*0* — Voltar\n\n` +
         `── Corrigir ──\n` +
         `*3* — Alterar quantidade\n` +
         `*4* — Alterar leitura\n` +
@@ -1041,7 +1041,7 @@ async function handleConfirmacao(session, from, body) {
             }
             await updateSession(session.id, 'concluido', session.session_data);
             await responder(from,
-                `🎉 *Solicitação #${result.id} criada com sucesso!*\n\n` +
+                `*Solicitação #${result.id} criada com sucesso!*\n\n` +
                 `Sua solicitação foi enviada para análise.\n` +
                 `Você receberá uma notificação quando for aprovada.\n\n` +
                 `_Envie *oi* para fazer uma nova solicitação._`
@@ -1058,7 +1058,7 @@ async function handleConfirmacao(session, from, body) {
     } else {
         await responder(from,
             `Responda:\n` +
-            `✅ *1* — Confirmar\n❌ *2* — Cancelar\n↩️ *0* — Voltar\n` +
+            `*1* — Confirmar\n*2* — Cancelar\n*0* — Voltar\n` +
             `*3* — Alterar quantidade\n*4* — Alterar leitura\n*5* — Trocar foto`
         );
     }
@@ -1094,7 +1094,7 @@ async function _processarMensagem({ from, phoneNumber, body, hasMedia, mediaBase
         const session = await getSession(from);
         if (session) {
             await cancelSession(session.id);
-            await responder(from, `✅ Solicitação cancelada.\n\nEnvie *oi* para iniciar uma nova.`);
+            await responder(from, `Solicitação cancelada.\n\nEnvie *oi* para iniciar uma nova.`);
         }
         return;
     }
@@ -1146,13 +1146,13 @@ async function _processarMensagem({ from, phoneNumber, body, hasMedia, mediaBase
         // Monta mensagem de boas-vindas
         let msgVeiculo = '';
         if (ultimaData?.veiculo_placa) {
-            msgVeiculo += `↩️ Digite *R* para repetir: *${ultimaData.veiculo_placa}* / *${ultimaData.obra_nome}* / ${ultimaData.tipo_combustivel}\n\n`;
+            msgVeiculo += `Digite *R* para repetir: *${ultimaData.veiculo_placa}* / *${ultimaData.obra_nome}* / ${ultimaData.tipo_combustivel}\n\n`;
         }
         if (veiculoAssociado) {
             const reLabel = veiculoAssociado.registroInterno ? ` (RE ${formatRI(veiculoAssociado.registroInterno)})` : '';
             msgVeiculo +=
                 `*Veículo associado ao seu cadastro:*\n` +
-                `🚗 *${veiculoAssociado.placa}*${reLabel}${veiculoAssociado.modelo ? ` — ${veiculoAssociado.modelo}` : ''}\n\n` +
+                `*${veiculoAssociado.placa}*${reLabel}${veiculoAssociado.modelo ? ` — ${veiculoAssociado.modelo}` : ''}\n\n` +
                 `Digite *1* para confirmar, ou informe a *placa* ou *RE* de outro veículo.\n\n`;
         } else {
             const veiculos = await buscarVeiculosAtivos();
@@ -1168,7 +1168,7 @@ async function _processarMensagem({ from, phoneNumber, body, hasMedia, mediaBase
         }
 
         await responder(from,
-            `👋 Olá, *${funcionario.nome}*!\n\n` +
+            `Olá, *${funcionario.nome}*!\n\n` +
             `Bem-vindo ao *Chatbot de Abastecimento Frotas MAK*.\n\n` +
             `*Passo 1/7 — Veículo*\n` +
             `${msgVeiculo}` +

@@ -78,27 +78,27 @@ const buildOrderText = (order) => {
     const lines = [
         `*Ordem de Abastecimento Nº ${String(order.authNumber || '').padStart(6, '0')}*`,
         ``,
-        `📅 Data: ${fmtDate(order.date)}`,
-        `🚛 Veículo: ${veiculoLinha || '—'}`,
-        `⛽ Combustível: ${fmtFuel(order.fuelType)}`,
-        `🛢️ Quantidade: ${litrosLinha}`,
+        `Data: ${fmtDate(order.date)}`,
+        `Veículo: ${veiculoLinha || '—'}`,
+        `Combustível: ${fmtFuel(order.fuelType)}`,
+        `Quantidade: ${litrosLinha}`,
     ];
     if (order.readingLabel && order.readingValue && order.readingValue !== 'N/A') lines.push(`📏 ${order.readingLabel}: ${order.readingValue}`);
-    if (order.pricePerLiter) lines.push(`💰 Valor/L: ${fmtMoney(order.pricePerLiter)}`);
-    if (order.valorTotal)    lines.push(`💵 Total: ${fmtMoney(order.valorTotal)}`);
-    if (order.invoiceNumber) lines.push(`🧾 NF: ${order.invoiceNumber}`);
-    if (order.obraName)      lines.push(`🏗️ Obra: ${order.obraName}`);
-    if (order.employeeName)  lines.push(`👤 Funcionário: ${order.employeeName}`);
-    if (order.partnerName)   lines.push(`🏪 Posto: ${order.partnerName}`);
+    if (order.pricePerLiter) lines.push(`Valor/L: ${fmtMoney(order.pricePerLiter)}`);
+    if (order.valorTotal)    lines.push(`Total: ${fmtMoney(order.valorTotal)}`);
+    if (order.invoiceNumber) lines.push(`NF: ${order.invoiceNumber}`);
+    if (order.obraName)      lines.push(`Obra: ${order.obraName}`);
+    if (order.employeeName)  lines.push(`Funcionário: ${order.employeeName}`);
+    if (order.partnerName)   lines.push(`Posto: ${order.partnerName}`);
     if (order.needsArla) {
         const arlaQt = order.isFillUpArla ? 'Completar Tanque' : `${parseFloat(order.litrosLiberadosArla || 0).toFixed(2)} L`;
-        lines.push(`🧪 Arla 32 Autorizado: ${arlaQt}`);
+        lines.push(`Arla 32 Autorizado: ${arlaQt}`);
     }
     if (order.outros) {
         const valor = order.outrosValor ? ` (${fmtMoney(order.outrosValor)})` : '';
-        lines.push(`➕ Outros: ${order.outros}${valor}`);
+        lines.push(`Outros: ${order.outros}${valor}`);
     }
-    if (order.observacao)    lines.push(``, `📝 ${order.observacao}`);
+    if (order.observacao)    lines.push(``, `${order.observacao}`);
     lines.push(``, `_Mensagem automática — Sistema MAK Frotas_`);
     return lines.join('\n');
 };
