@@ -466,13 +466,21 @@ const http = require('http');
                 valor_sugerido_nome VARCHAR(200) NOT NULL,
                 observacao          TEXT         DEFAULT NULL,
                 status              VARCHAR(20)  DEFAULT 'pendente',
-                solicitante_id      INT          DEFAULT NULL,
+                solicitante_id      VARCHAR(36)  DEFAULT NULL,
                 solicitante_email   VARCHAR(200) DEFAULT NULL,
                 created_at          TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_status (status),
                 INDEX idx_veiculo (veiculo_id)
             )
         `);
+        // Garante o tipo correto da coluna em bancos onde a tabela já existe com INT.
+        try {
+            await db.query('ALTER TABLE operational_requests MODIFY COLUMN solicitante_id VARCHAR(36) DEFAULT NULL');
+        } catch (alterErr) {
+            if (alterErr.code !== 'ER_DUP_FIELDNAME') {
+                console.warn('[migration] ALTER operational_requests.solicitante_id:', alterErr.message);
+            }
+        }
         console.log('✅ Migração operational_requests concluída.');
 
         // Seed do template de cobrança de horas, se ainda não existir.
