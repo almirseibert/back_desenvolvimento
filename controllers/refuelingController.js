@@ -405,7 +405,10 @@ const createRefuelingOrder = async (req, res) => {
         //    para obras que operam quando o escritório está fechado);
         //  - veículo fictício (vehicles.permiteMultiplosAbastecimentos = 1)
         //    usado para ajuda de custo, gerador, lava-jato etc.
+        //  - veículo terceirizado (vehicles.isOutsourced = 1) — frota não gerida
+        //    por nós; apenas registramos consumo para faturamento.
         // FOR UPDATE serializa contra criações concorrentes dentro da transação.
+        let isOutsourcedVehicle = false;
         if (data.vehicleId) {
             const FERIADOS_BR_FIXOS = new Set([
                 '01-01', '04-21', '05-01', '09-07',
@@ -416,13 +419,18 @@ const createRefuelingOrder = async (req, res) => {
             const isWeekendOrHoliday = dow === 0 || dow === 6 || FERIADOS_BR_FIXOS.has(mmdd);
 
             const [vehicleRows] = await connection.execute(
-                'SELECT permiteMultiplosAbastecimentos FROM vehicles WHERE id = ?',
+                'SELECT permiteMultiplosAbastecimentos, isOutsourced FROM vehicles WHERE id = ?',
                 [data.vehicleId]
             );
             const allowMultiple = vehicleRows.length > 0
                 && (vehicleRows[0].permiteMultiplosAbastecimentos == 1 || vehicleRows[0].permiteMultiplosAbastecimentos === true);
+            // Veículos terceirizados não estão sob nossas regras de gestão de frota
+            // (leitura, orçamento, operador placeholder, ordem em aberto): a operação
+            // pertence ao terceiro e só registramos o consumo para faturamento.
+            isOutsourcedVehicle = vehicleRows.length > 0
+                && (vehicleRows[0].isOutsourced == 1 || vehicleRows[0].isOutsourced === true);
 
-            if (!isWeekendOrHoliday && !allowMultiple) {
+            if (!isWeekendOrHoliday && !allowMultiple && !isOutsourcedVehicle) {
                 const [openRows] = await connection.execute(
                     `SELECT id, authNumber, status
                        FROM refuelings
@@ -450,7 +458,9 @@ const createRefuelingOrder = async (req, res) => {
             // entra um placeholder (COLABORADOR, TESTE, MAK SERVIÇOS etc.). Se o
             // operador real não for trocado em até 7 dias, suspende emissão de
             // ordens até que alguém atualize o operador na tela de alocação.
-            const [placeholderRows] = await connection.execute(
+            // Veículos terceirizados não usam nossa malha de alocação de operadores,
+            // então pulam este bloqueio.
+            const [placeholderRows] = isOutsourcedVehicle ? [[]] : await connection.execute(
                 `SELECT h.dataEntrada, e.nome AS employeeName
                    FROM obras_historico_veiculos h
                    INNER JOIN employees e ON e.id = h.employeeId
@@ -488,12 +498,13 @@ const createRefuelingOrder = async (req, res) => {
             createdByData.linkedSolicitacaoId = data.solicitacaoId;
         }
 
-        const motivoLeitura = await checkLeituraBloqueada(
+        // Terceirizados pulam validações de leitura e orçamento (frota não gerida por nós).
+        const motivoLeitura = isOutsourcedVehicle ? null : await checkLeituraBloqueada(
             connection, data.vehicleId,
             data.odometro != null ? parseFloat(data.odometro) : null,
             data.horimetro != null ? parseFloat(data.horimetro) : null
         );
-        const bloqueadoOrcamento = !motivoLeitura && await checkOrcamentoBloqueado(connection, data.obraId);
+        const bloqueadoOrcamento = !isOutsourcedVehicle && !motivoLeitura && await checkOrcamentoBloqueado(connection, data.obraId);
 
         let initialStatus = data.status || 'Aberta';
         if (motivoLeitura) initialStatus = 'BloqueadoLeitura';

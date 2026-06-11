@@ -115,9 +115,14 @@ const criarSolicitacao = async (req, res) => {
         }
         const veiculo = vehicles[0];
 
+        // Veículos terceirizados ficam fora da nossa malha de gestão de frota:
+        // pulam validações de leitura, orçamento e solicitação duplicada — apenas
+        // registramos o consumo para faturamento ao terceiro.
+        const isOutsourcedVehicle = veiculo.isOutsourced == 1 || veiculo.isOutsourced === true;
+
         // 1.1 Validar se já existe solicitação em aberto para este veículo (Regra de Negócio com CORREÇÃO ANTI-TRAVAMENTO)
         // Ignora solicitações travadas mais antigas que 48 horas (se houve erro sistêmico, o motorista consegue pedir de novo após 2 dias)
-        const [duplicates] = await connection.execute(
+        const [duplicates] = isOutsourcedVehicle ? [[]] : await connection.execute(
             `SELECT id FROM solicitacoes_abastecimento
              WHERE veiculo_id = ?
              AND status IN ('PENDENTE', 'LIBERADO', 'AGUARDANDO_BAIXA')
@@ -155,7 +160,10 @@ const criarSolicitacao = async (req, res) => {
 
         const limiteSaltoKm = getLimiteSaltoKm(veiculo.tipo);
 
-        if (novoOdometro > 0) {
+        // Terceirizados pulam toda a validação de leitura (gestão é do terceiro).
+        if (isOutsourcedVehicle) {
+            // não valida odômetro/horímetro
+        } else if (novoOdometro > 0) {
             if (novoOdometro < antOdometro) {
                 erroValidacao = `Odômetro informado (${novoOdometro} Km) é menor que o atual (${antOdometro} Km).`;
                 erroCampo = 'odometro'; erroTipo = 'regressao';
@@ -166,7 +174,7 @@ const criarSolicitacao = async (req, res) => {
                 erroValorInformado = novoOdometro; erroValorAnterior = antOdometro;
             }
         }
-        if (!erroValidacao && novoHorimetro > 0) {
+        if (!erroValidacao && !isOutsourcedVehicle && novoHorimetro > 0) {
             if (novoHorimetro < antHorimetro) {
                 erroValidacao = `Horímetro informado (${novoHorimetro} h) é menor que o atual (${antHorimetro} h).`;
                 erroCampo = 'horimetro'; erroTipo = 'regressao';
@@ -201,8 +209,8 @@ const criarSolicitacao = async (req, res) => {
             });
         }
 
-        // 3. Trava Orçamentária
-        const [obras] = await connection.execute('SELECT * FROM obras WHERE id = ?', [obra_id]);
+        // 3. Trava Orçamentária — terceirizados não usam o orçamento da obra.
+        const [obras] = isOutsourcedVehicle ? [[]] : await connection.execute('SELECT * FROM obras WHERE id = ?', [obra_id]);
         if (obras.length > 0) {
             const valorContrato = parseFloat(obras[0].valorContrato || 0);
             if (valorContrato > 0) {

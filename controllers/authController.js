@@ -42,8 +42,9 @@ const login = async (req, res) => {
             return res.status(401).json({ message: 'Credenciais inválidas ou usuário não encontrado.' });
         }
 
-        if (user.status === 'Inativo') {
-            return res.status(403).json({ message: 'Usuário inativo.' });
+        const statusNormalizado = (user.status || '').toString().toLowerCase();
+        if (statusNormalizado === 'inativo') {
+            return res.status(403).json({ message: 'Cadastro pendente de aprovação pelo administrador.' });
         }
 
         const isMatch = await bcrypt.compare(password, user.password);
@@ -112,13 +113,13 @@ const register = async (req, res) => {
 
             await db.query(
                 'INSERT INTO users (id, name, email, username, password, role, user_type, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                [userId, name || loginIdentifier, loginIdentifier, username || loginIdentifier, hashedPassword, role, user_type, 'Ativo']
+                [userId, name || loginIdentifier, loginIdentifier, username || loginIdentifier, hashedPassword, role, user_type, 'inativo']
             );
         } catch (colErr) {
             console.warn('[register] Fallback de inserção (usando ID auto incrementado ou faltando colunas):', colErr.message);
             await db.query(
                 'INSERT INTO users (name, email, username, password, role, status) VALUES (?, ?, ?, ?, ?, ?)',
-                [name || loginIdentifier, loginIdentifier, username || loginIdentifier, hashedPassword, role, 'Ativo']
+                [name || loginIdentifier, loginIdentifier, username || loginIdentifier, hashedPassword, role, 'inativo']
             );
         }
 
@@ -128,7 +129,7 @@ const register = async (req, res) => {
             req.io.emit('admin:notificacao', { tipo: 'nova_solicitacao_cadastro' });
         }
 
-        res.status(201).json({ message: 'Usuário registrado com sucesso!' });
+        res.status(201).json({ message: 'Solicitação de cadastro enviada. Aguarde a aprovação do administrador para acessar o sistema.' });
 
     } catch (error) {
         console.error('Erro geral no registro:', error);
