@@ -251,7 +251,7 @@ app.post('/send', async (req, res) => {
         return res.status(503).json({ error: `WhatsApp não está pronto. Status atual: ${clientStatus}` });
     }
 
-    const { number, message, documentUrl, documentFilename } = req.body;
+    const { number, message, documentUrl, documentFilename, documentBase64, documentMimetype } = req.body;
 
     try {
         // Suporta @c.us — usa o sufixo original se já vier com @
@@ -294,19 +294,29 @@ app.post('/send', async (req, res) => {
         const messageId = resp?.id?._serialized || null;
 
         let pdfStatus = null;
-        if (documentUrl) {
+        if (documentBase64 || documentUrl) {
             try {
-                console.log(`📎 Baixando anexo de: ${documentUrl}`);
-                const media = await MessageMedia.fromUrl(documentUrl, { unsafeMime: true });
-                // Prioriza o nome enviado pelo backend (ex: Autorizacao_<n>_<RI>_<data>.pdf).
-                // Senão tenta extrair do final da URL. Último fallback: nome genérico.
-                const fromUrl = (() => {
-                    try {
-                        const tail = decodeURIComponent(documentUrl.split('?')[0].split('/').pop() || '');
-                        return tail && tail.toLowerCase().endsWith('.pdf') ? tail : null;
-                    } catch { return null; }
-                })();
-                media.filename = documentFilename || fromUrl || 'Ordem_Abastecimento_FrotasMAK.pdf';
+                let media;
+                if (documentBase64) {
+                    // Caminho preferencial: PDF embutido no payload (sem depender de
+                    // o container do WhatsApp conseguir baixar a URL pública).
+                    console.log(`📎 Anexo recebido como base64 (${Math.round(documentBase64.length * 0.75 / 1024)} KB)`);
+                    media = new MessageMedia(
+                        documentMimetype || 'application/pdf',
+                        documentBase64,
+                        documentFilename || 'Ordem_Abastecimento_FrotasMAK.pdf'
+                    );
+                } else {
+                    console.log(`📎 Baixando anexo de: ${documentUrl}`);
+                    media = await MessageMedia.fromUrl(documentUrl, { unsafeMime: true });
+                    const fromUrl = (() => {
+                        try {
+                            const tail = decodeURIComponent(documentUrl.split('?')[0].split('/').pop() || '');
+                            return tail && tail.toLowerCase().endsWith('.pdf') ? tail : null;
+                        } catch { return null; }
+                    })();
+                    media.filename = documentFilename || fromUrl || 'Ordem_Abastecimento_FrotasMAK.pdf';
+                }
                 await client.sendMessage(chatId, media, { sendMediaAsDocument: true });
                 pdfStatus = 'enviado';
             } catch (pdfErr) {

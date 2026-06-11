@@ -58,7 +58,7 @@ const whatsappService = {
         return data;
     },
 
-    async enviarMensagem(numeroDestino, nomeDestinatario, motivo, mensagem, anexoUrl = null, anexoFilename = null) {
+    async enviarMensagem(numeroDestino, nomeDestinatario, motivo, mensagem, anexoUrl = null, anexoFilename = null, anexoBase64 = null, anexoMimetype = null) {
         if (!WA_URL || !WA_KEY) {
             console.warn(`⚠️ Ignorando envio para ${nomeDestinatario} (WhatsApp não configurado).`);
             return null;
@@ -71,6 +71,13 @@ const whatsappService = {
             const payload = { number: numeroFormatado, message: mensagem };
             if (anexoUrl) payload.documentUrl = anexoUrl;
             if (anexoFilename) payload.documentFilename = anexoFilename;
+            // Prioriza o PDF embutido como base64 — evita que o microsserviço
+            // precise baixar a URL pública (que pode falhar em redes isoladas
+            // de container, certificados ausentes etc.).
+            if (anexoBase64) {
+                payload.documentBase64 = anexoBase64;
+                payload.documentMimetype = anexoMimetype || 'application/pdf';
+            }
 
             const { data } = await axios.post(
                 `${WA_URL}/send`,

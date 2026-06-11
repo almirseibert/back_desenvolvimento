@@ -143,15 +143,22 @@ const sendToPartner = async (partner, order, opts = {}) => {
 
     if (wantWa && partner.whatsapp) {
         try {
+            // Envia o PDF como base64 (mesmo buffer já gerado para o e-mail).
+            // O microsserviço usa o buffer direto — sem precisar baixar a URL,
+            // o que evita falhas silenciosas que faziam o WhatsApp chegar
+            // apenas com o texto, sem o anexo.
+            const pdfB64 = pdf?.buffer ? pdf.buffer.toString('base64') : null;
             await whatsappService.enviarMensagem(
                 partner.whatsapp,
                 partner.razaoSocial || 'Posto',
                 `ordem_${order.tipo || 'abastecimento'}_${order.authNumber || ''}`,
                 buildOrderText(order),
                 pdf?.url || null,
-                pdf?.filename || null
+                pdf?.filename || null,
+                pdfB64,
+                pdfB64 ? 'application/pdf' : null
             );
-            out.whatsapp = pdf?.url ? 'enviado (com PDF)' : 'enviado';
+            out.whatsapp = (pdfB64 || pdf?.url) ? 'enviado (com PDF)' : 'enviado';
         } catch (e) {
             console.warn(`[orderNotifier] WhatsApp falhou para ${partner.razaoSocial}:`, e.message);
             out.whatsapp = `falha: ${e.message}`;
