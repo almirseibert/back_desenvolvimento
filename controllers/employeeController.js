@@ -40,7 +40,8 @@ const getAllEmployees = async (req, res) => {
         let allocationMap = {};
         try {
             const [activeObraAllocations] = await db.query(`
-                SELECT h.employeeId, v.registroInterno, v.modelo, v.placa, o.nome as obraNome
+                SELECT h.employeeId, v.registroInterno, v.modelo, v.placa,
+                       CONCAT(o.nome, IF(o.orgao_contratante IS NOT NULL AND o.orgao_contratante <> '', CONCAT(' (', o.orgao_contratante, ')'), '')) as obraNome
                 FROM obras_historico_veiculos h
                 INNER JOIN vehicles v ON h.veiculoId = v.id
                 LEFT JOIN obras o ON h.obraId = o.id
@@ -368,7 +369,9 @@ const getEmployeeHistory = async (req, res) => {
 
         try {
             const [rows] = await db.execute(
-                `SELECT h.*, o.nome as obraNome, v.placa, v.modelo, v.registroInterno as veiculoRegistro
+                `SELECT h.*,
+                        CONCAT(o.nome, IF(o.orgao_contratante IS NOT NULL AND o.orgao_contratante <> '', CONCAT(' (', o.orgao_contratante, ')'), '')) as obraNome,
+                        v.placa, v.modelo, v.registroInterno as veiculoRegistro
                  FROM obras_historico_veiculos h
                  LEFT JOIN obras o ON h.obraId = o.id
                  LEFT JOIN vehicles v ON h.veiculoId = v.id

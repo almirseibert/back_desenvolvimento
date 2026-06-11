@@ -23,24 +23,25 @@ const normalizeFuelType = (val) => {
  * Valida a leitura de Odômetro ou Horímetro
  * Retorna string de erro ou null se estiver OK
  */
-const validateMeterReading = (current, previous, type = 'km') => {
+const validateMeterReading = (current, previous, type = 'km', kmLimit = 1000) => {
     // Converte para número seguro
     const curr = parseFloat(current);
     const prev = parseFloat(previous);
 
     // Se não informou ou é zero, assume que não houve leitura (ou veículo novo) - Passa
-    if (isNaN(curr) || curr <= 0) return null; 
-    
+    if (isNaN(curr) || curr <= 0) return null;
+
     // Se não tem histórico anterior, não temos como validar - Passa
-    if (isNaN(prev)) return null; 
+    if (isNaN(prev)) return null;
 
     // Regra 1: Leitura menor que a anterior
     if (curr < prev) {
         return `${type === 'km' ? 'Odômetro' : 'Horímetro'} menor que o anterior (${prev}).`;
     }
 
-    // Regra 2: Salto excessivo — alinhado com vehicleRules.js (1000 Km / 50 Hr)
-    const limit = type === 'km' ? 1000 : 50;
+    // Regra 2: Salto excessivo — alinhado com vehicleRules.js (1000 Km padrão / 50 Hr).
+    // kmLimit permite a exceção dos "Caminhões de Trecho" (2000 Km).
+    const limit = type === 'km' ? kmLimit : 50;
     if ((curr - prev) > limit) {
         return `Salto excessivo de ${type === 'km' ? 'Odômetro' : 'Horímetro'} (> ${limit}). Verifique a digitação.`;
     }

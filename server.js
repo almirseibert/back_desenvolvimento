@@ -41,6 +41,9 @@ const http = require('http');
         { table: 'tire_transactions',      column: 'horimeter',                        def: 'DECIMAL(10,1) NULL' },
         // FASE 2.6 — Comboio: períodos por obra + parceiro comboio
         { table: 'comboio_transactions',   column: 'obra_periodo_id',                  def: 'VARCHAR(36) DEFAULT NULL' },
+        // Fotos das distribuições feitas pelo operador do comboio direto na obra
+        // (horímetro, RE/placa, medidor zerado, medidor com litragem). JSON com URLs.
+        { table: 'comboio_transactions',   column: 'fotos',                            def: 'JSON DEFAULT NULL' },
         { table: 'partners',               column: 'vehicle_id',                       def: 'VARCHAR(36) DEFAULT NULL' },
         // Campo KM/Hr atual no modal de OS/OC
         { table: 'orders',                 column: 'kmHrAtual',                        def: 'DECIMAL(12,1) DEFAULT NULL' },

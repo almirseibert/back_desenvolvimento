@@ -63,6 +63,33 @@ const initAdminTables = async () => {
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         `);
+        // Contatos internos (Fase 4.1) — persistência dos contatos da operação.
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS internal_contacts (
+                id VARCHAR(36) PRIMARY KEY,
+                nome VARCHAR(150) NOT NULL,
+                cargo VARCHAR(100) NULL,
+                setor VARCHAR(100) NULL,
+                whatsapp VARCHAR(30) NULL,
+                email VARCHAR(150) NULL,
+                observacao TEXT NULL,
+                ativo TINYINT NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        // Destinos de notificação por evento (Fase 3.1).
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS notification_targets (
+                id VARCHAR(36) PRIMARY KEY,
+                event_type VARCHAR(60) NOT NULL,
+                channel VARCHAR(20) NOT NULL,
+                target_type VARCHAR(20) NOT NULL,
+                target_value VARCHAR(190) NOT NULL,
+                label VARCHAR(150) NULL,
+                active TINYINT NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
         // Adicionar group_id na tabela users se não existir
         try {
             const [cols] = await db.query(

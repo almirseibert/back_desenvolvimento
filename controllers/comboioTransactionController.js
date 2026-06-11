@@ -2,6 +2,9 @@
 const db = require('../database');
 const { createOrUpdateWeeklyFuelExpense } = require('./expenseController');
 const crypto = require('crypto');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const { updateVehicleReading } = require('../utils/updateVehicleReading');
 const { ensureComboioPartner, buildComboioPartnerId } = require('../utils/ensureComboioPartner');
 const { notifyComboioEntrada } = require('../services/orderNotifier');
@@ -27,6 +30,58 @@ const parseDateBRT = (d) => {
 const sanitizeNumber = (value) => {
     if (value === undefined || value === null || value === '' || isNaN(value)) return null;
     return parseFloat(value);
+};
+
+// --- UPLOAD DE FOTOS DA DISTRIBUIÇÃO (operador do comboio) ---
+// As distribuições feitas pelo operador direto na obra exigem fotos
+// (horímetro, RE/placa, medidor zerado e medidor com litragem). Guardamos
+// os arquivos em disco e o caminho relativo na coluna JSON `fotos`.
+const COMBOIO_UPLOAD_DIR = path.join(__dirname, '..', 'public', 'uploads', 'comboio');
+if (!fs.existsSync(COMBOIO_UPLOAD_DIR)) {
+    fs.mkdirSync(COMBOIO_UPLOAD_DIR, { recursive: true });
+}
+const comboioStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, COMBOIO_UPLOAD_DIR),
+    filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname || '.jpg').toLowerCase() || '.jpg';
+        const unique = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+        cb(null, `${file.fieldname}-${unique}${ext}`);
+    },
+});
+// `uploadSaidaFotos` é usado como middleware na rota POST /saida.
+// O multer ignora requisições que não sejam multipart/form-data, então a
+// distribuição feita pelo desktop (JSON puro, sem fotos) continua funcionando.
+const uploadSaidaFotos = multer({
+    storage: comboioStorage,
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB por foto
+    fileFilter: (req, file, cb) => {
+        const ALLOWED = ['.jpg', '.jpeg', '.png', '.webp'];
+        const ext = path.extname(file.originalname || '').toLowerCase();
+        if (!ext || ALLOWED.includes(ext)) return cb(null, true);
+        cb(new Error(`Tipo de imagem não permitido: ${ext}`));
+    },
+}).fields([
+    { name: 'foto_horimetro', maxCount: 1 },
+    { name: 'foto_re', maxCount: 1 },
+    { name: 'foto_medidor_zerado', maxCount: 1 },
+    { name: 'foto_litragem', maxCount: 1 },
+]);
+
+// Monta o objeto JSON de fotos a partir de req.files (multer .fields()).
+const buildFotosFromReq = (req) => {
+    if (!req.files) return null;
+    const map = {
+        foto_horimetro: 'horimetro',
+        foto_re: 're',
+        foto_medidor_zerado: 'medidorZerado',
+        foto_litragem: 'litragem',
+    };
+    const fotos = {};
+    for (const [field, key] of Object.entries(map)) {
+        const f = req.files[field]?.[0];
+        if (f) fotos[key] = `/uploads/comboio/${f.filename}`;
+    }
+    return Object.keys(fotos).length > 0 ? JSON.stringify(fotos) : null;
 };
 
 // --- HELPER: Checar Duplicidade de NF ---
@@ -217,35 +272,6 @@ const getOrCreateActivePeriod = async (connection, comboioVehicleId, obraId) => 
         [newId, comboioVehicleId, obraId]
     );
     return newId;
-};
-
-// --- HELPER: Cria ordem C/S para entrada de combustível no comboio ---
-const createOrderForEntrada = async (connection, { partnerId, partnerName, comboioVehicleId, obraId, safeLiters, fuelType, price, valorTotal, invoiceNumber, createdBy, date }) => {
-    const [counterRows] = await connection.execute(
-        'SELECT lastNumber FROM counters WHERE name = "purchaseOrderCounter" FOR UPDATE'
-    );
-    const newOrderNumber = (counterRows[0]?.lastNumber || 0) + 1;
-    await connection.execute(
-        'INSERT INTO counters (name, lastNumber) VALUES ("purchaseOrderCounter", ?) ON DUPLICATE KEY UPDATE lastNumber = ?',
-        [newOrderNumber, newOrderNumber]
-    );
-
-    const fuelLabel = fuelType === 'dieselS10' ? 'Diesel S10' : fuelType === 'dieselComum' ? 'Diesel Comum' : fuelType;
-    const items = JSON.stringify([{
-        descricao: `Combustível: ${fuelLabel}`,
-        quantidade: safeLiters,
-        unidade: 'L',
-        valorUnitario: price,
-        total: valorTotal
-    }]);
-
-    const orderId = crypto.randomUUID();
-    await connection.execute(
-        `INSERT INTO orders (id, orderNumber, date, supplierId, supplier, vehicleId, obraId, totalValue, status, invoiceNumber, items, createdBy)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Concluída', ?, ?, ?)`,
-        [orderId, newOrderNumber, new Date(date), partnerId, partnerName, comboioVehicleId, obraId || null, valorTotal, invoiceNumber || null, items, JSON.stringify(createdBy || {})]
-    );
-    return { orderId, orderNumber: newOrderNumber };
 };
 
 // --- HELPER: Notifica posto após entrada (WhatsApp / Email) ---
@@ -439,18 +465,12 @@ const createEntradaTransaction = async (req, res) => {
             await updateMonthlyExpense(connection, refuelingData.obraId, refuelingData.partnerId, refuelingData.fuelType, refuelingData.data);
         }
 
-        // Cria ordem C/S para rastreabilidade da entrada
-        const { orderNumber } = await createOrderForEntrada(connection, {
-            partnerId, partnerName, comboioVehicleId, obraId,
-            safeLiters, fuelType, price, valorTotal, invoiceNumber, createdBy, date
-        });
-
         await connection.commit();
 
         // Notifica posto em background (fora da transação)
-        notifyPartnerEntrada(partnerId, partnerName, orderNumber, safeLiters, fuelType, date);
+        notifyPartnerEntrada(partnerId, partnerName, newAuthNumber, safeLiters, fuelType, date);
 
-        req.io.emit('server:sync', { targets: ['comboio', 'vehicles', 'refuelings', 'expenses', 'orders'] });
+        req.io.emit('server:sync', { targets: ['comboio', 'vehicles', 'refuelings', 'expenses'] });
 
         // ─── Envio automático da ordem ────────────────────────────────────
         // Para o posto fornecedor: respeita partners.envia_por_whatsapp / envia_por_email
@@ -493,13 +513,21 @@ const createEntradaTransaction = async (req, res) => {
 
 // --- CRIAR SAÍDA (Abastecimento de Veículo pelo Comboio) ---
 const createSaidaTransaction = async (req, res) => {
-    const { 
-        comboioVehicleId, receivingVehicleId, 
-        odometro, horimetro, 
-        liters, date, fuelType, 
-        obraId, employeeId, createdBy 
+    const {
+        comboioVehicleId, receivingVehicleId,
+        odometro, horimetro,
+        liters, date, fuelType,
+        obraId, employeeId, createdBy
     } = req.body;
-    
+
+    // Em multipart (distribuição do operador com fotos) createdBy chega como string.
+    let parsedCreatedBy = createdBy;
+    if (typeof parsedCreatedBy === 'string') {
+        try { parsedCreatedBy = JSON.parse(parsedCreatedBy); }
+        catch { parsedCreatedBy = { userEmail: createdBy }; }
+    }
+    const fotosJson = buildFotosFromReq(req);
+
     const connection = await db.getConnection();
     await connection.beginTransaction();
 
@@ -562,7 +590,7 @@ const createSaidaTransaction = async (req, res) => {
             pricePerLiter: 0, // Custo já está no posto
             odometro: sanitizeNumber(odometro),
             horimetro: sanitizeNumber(horimetro),
-            createdBy: JSON.stringify(createdBy || {})
+            createdBy: JSON.stringify(parsedCreatedBy || {})
         };
 
         const rfFields = Object.keys(refuelingData);
@@ -595,9 +623,10 @@ const createSaidaTransaction = async (req, res) => {
             employeeId: sanitize(employeeId),
             liters: safeLiters,
             fuelType: sanitize(fuelType),
-            responsibleUserEmail: sanitize(createdBy?.userEmail),
+            responsibleUserEmail: sanitize(parsedCreatedBy?.userEmail),
             odometro: sanitizeNumber(odometro),
-            horimetro: sanitizeNumber(horimetro)
+            horimetro: sanitizeNumber(horimetro),
+            fotos: fotosJson
         };
         
         const fields = Object.keys(transactionData);
@@ -883,4 +912,5 @@ module.exports = {
     createSaidaTransaction,
     createDrenagemTransaction,
     updateTransaction,
+    uploadSaidaFotos,
 };

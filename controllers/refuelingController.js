@@ -3,6 +3,7 @@ const db = require('../database');
 const crypto = require('crypto');
 const { updateVehicleReading } = require('../utils/updateVehicleReading');
 const { recalcFuelAverage } = require('../utils/recalcFuelAverage');
+const { vehicleGroups } = require('../utils/vehicleRules');
 const { notifyComboioEntrada } = require('../services/orderNotifier');
 const fs = require('fs');
 const path = require('path');
@@ -326,7 +327,9 @@ const checkLeituraBloqueada = async (connection, vehicleId, odometro, horimetro)
         );
         if (!v) return null;
 
-        const ODO_MAX_JUMP = 1000;
+        // Exceção: grupo "Caminhões de Trecho" (Caminhão Prancha / Semirreboques)
+        // pode deslocar até 2000 km entre abastecidas.
+        const ODO_MAX_JUMP = vehicleGroups['Caminhões de Trecho']?.includes(v.tipo) ? 2000 : 1000;
         const HORI_MAX_JUMP = 50;
 
         const odo = odometro != null ? parseFloat(odometro) : NaN;
@@ -555,6 +558,16 @@ const createRefuelingOrder = async (req, res) => {
 
         await connection.commit();
         req.io.emit('server:sync', { targets: ['refuelings', 'vehicles', 'expenses', 'solicitacoes'] });
+
+        // Ordem salva bloqueada (leitura ou orçamento) → alerta admins (pop-up + som).
+        if (motivoLeitura || bloqueadoOrcamento) {
+            req.io.emit('admin:notificacao', {
+                tipo: 'ordem_bloqueada',
+                mensagem: motivoLeitura
+                    ? `Ordem Nº ${newAuthNumber} bloqueada por leitura aguardando liberação.`
+                    : `Ordem Nº ${newAuthNumber} bloqueada por orçamento aguardando liberação.`,
+            });
+        }
 
         // Dispara envio automático ao posto APENAS se a ordem foi efetivamente liberada.
         // Bloqueios (leitura/orçamento) aguardam ação do admin — o envio acontece no liberar.

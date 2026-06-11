@@ -2,6 +2,13 @@ const db = require('../database');
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
+const { vehicleGroups } = require('../utils/vehicleRules');
+
+// Exceção da trava de leitura: veículos do grupo "Caminhões de Trecho"
+// (Caminhão Prancha / Semirreboques) podem deslocar até 2000 km entre
+// abastecidas; os demais mantêm o limite padrão de 1000 km.
+const getLimiteSaltoKm = (tipo) =>
+    vehicleGroups['Caminhões de Trecho']?.includes(tipo) ? 2000 : 1000;
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -146,13 +153,15 @@ const criarSolicitacao = async (req, res) => {
         const antOdometro = safeNum(veiculo.odometro);
         const antHorimetro = safeNum(veiculo.horimetro);
 
+        const limiteSaltoKm = getLimiteSaltoKm(veiculo.tipo);
+
         if (novoOdometro > 0) {
             if (novoOdometro < antOdometro) {
                 erroValidacao = `Odômetro informado (${novoOdometro} Km) é menor que o atual (${antOdometro} Km).`;
                 erroCampo = 'odometro'; erroTipo = 'regressao';
                 erroValorInformado = novoOdometro; erroValorAnterior = antOdometro;
-            } else if ((novoOdometro - antOdometro) > 1000) {
-                erroValidacao = `Salto de Odômetro excessivo: de ${antOdometro} para ${novoOdometro} Km (>1000 Km).`;
+            } else if ((novoOdometro - antOdometro) > limiteSaltoKm) {
+                erroValidacao = `Salto de Odômetro excessivo: de ${antOdometro} para ${novoOdometro} Km (>${limiteSaltoKm} Km).`;
                 erroCampo = 'odometro'; erroTipo = 'salto_excessivo';
                 erroValorInformado = novoOdometro; erroValorAnterior = antOdometro;
             }

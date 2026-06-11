@@ -15,7 +15,9 @@ router.put('/:id', comboioController.updateTransaction);
 
 // Novas rotas para transações do comboio
 router.post('/entrada', comboioController.createEntradaTransaction);
-router.post('/saida', comboioController.createSaidaTransaction);
+// /saida aceita multipart (fotos da distribuição do operador). O multer ignora
+// requisições JSON, então a distribuição feita pelo desktop continua funcionando.
+router.post('/saida', comboioController.uploadSaidaFotos, comboioController.createSaidaTransaction);
 router.post('/drenagem', comboioController.createDrenagemTransaction);
 
 module.exports = router;
