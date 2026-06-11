@@ -44,6 +44,9 @@ const criarRequisicao = async (req, res) => {
         return res.status(400).json({ error: 'A sugestão (obra ou operador) é obrigatória.' });
     }
 
+    // mysql2 prepared statements lançam erro com `undefined` — força null.
+    const nn = (v) => (v === undefined || v === '' ? null : v);
+
     try {
         const [result] = await db.execute(
             `INSERT INTO operational_requests
@@ -52,17 +55,17 @@ const criarRequisicao = async (req, res) => {
                  status, solicitante_id, solicitante_email)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?)`,
             [
-                tipo,
-                veiculo_id,
-                veiculo_registro || null,
-                obra_atual_id || null,
-                obra_atual_nome || null,
-                operador_atual_nome || null,
-                valor_sugerido_id || null,
-                valor_sugerido_nome,
-                observacao || null,
-                req.user?.id || null,
-                req.user?.email || null,
+                nn(tipo),
+                nn(veiculo_id),
+                nn(veiculo_registro),
+                nn(obra_atual_id),
+                nn(obra_atual_nome),
+                nn(operador_atual_nome),
+                nn(valor_sugerido_id),
+                nn(valor_sugerido_nome),
+                nn(observacao),
+                nn(req.user?.id),
+                nn(req.user?.email),
             ]
         );
 
@@ -78,8 +81,17 @@ const criarRequisicao = async (req, res) => {
 
         res.status(201).json({ id: result.insertId });
     } catch (error) {
-        console.error('Erro ao criar requisição operacional:', error);
-        res.status(500).json({ error: 'Erro ao criar requisição operacional' });
+        console.error('Erro ao criar requisição operacional:', {
+            message: error.message,
+            code: error.code,
+            sqlState: error.sqlState,
+            sqlMessage: error.sqlMessage,
+        });
+        res.status(500).json({
+            error: 'Erro ao criar requisição operacional',
+            detail: error.sqlMessage || error.message,
+            code: error.code,
+        });
     }
 };
 
