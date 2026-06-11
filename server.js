@@ -447,6 +447,39 @@ const http = require('http');
 })();
 
 // ====================================================================
+// MIGRAÇÃO — Requisições operacionais (sugestões de mudança de obra/operador)
+// Usuários da Central Operacional sugerem ao admin a real obra/operador de um
+// veículo. Sem fluxo de aprovação dedicado — admin visualiza em ADMIN → Frota.
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS operational_requests (
+                id                  INT AUTO_INCREMENT PRIMARY KEY,
+                tipo                VARCHAR(30)  NOT NULL,
+                veiculo_id          VARCHAR(36)  NOT NULL,
+                veiculo_registro    VARCHAR(100) DEFAULT NULL,
+                obra_atual_id       VARCHAR(36)  DEFAULT NULL,
+                obra_atual_nome     VARCHAR(200) DEFAULT NULL,
+                operador_atual_nome VARCHAR(200) DEFAULT NULL,
+                valor_sugerido_id   VARCHAR(36)  DEFAULT NULL,
+                valor_sugerido_nome VARCHAR(200) NOT NULL,
+                observacao          TEXT         DEFAULT NULL,
+                status              VARCHAR(20)  DEFAULT 'pendente',
+                solicitante_id      INT          DEFAULT NULL,
+                solicitante_email   VARCHAR(200) DEFAULT NULL,
+                created_at          TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_status (status),
+                INDEX idx_veiculo (veiculo_id)
+            )
+        `);
+        console.log('✅ Migração operational_requests concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] operational_requests:', e.message);
+    }
+})();
+
+// ====================================================================
 // MIGRAÇÃO — Fase 1.2: Tabela de médias de consumo de combustível
 // ====================================================================
 (async () => {
@@ -645,6 +678,7 @@ const orderRoutes = require('./routes/orderRoutes');
 const counterRoutes = require('./routes/counterRoutes');
 const inactivityAlertRoutes = require('./routes/inactivityAlertRoutes');
 const registrationRequestRoutes = require('./routes/registrationRequestRoutes');
+const operationalRequestRoutes = require('./routes/operationalRequestRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const expensesRoutes = require('./routes/expenseRoutes');
 const userRoutes = require('./routes/userRoutes');
@@ -711,6 +745,7 @@ apiRouter.get('/', (req, res) => {
 // ⚠️ Rotas Públicas (SEM autenticação)
 apiRouter.use('/auth', authRoutes);
 apiRouter.use('/registrationRequests', registrationRequestRoutes);
+apiRouter.use('/operationalRequests', operationalRequestRoutes);
 
 // ====================================================================
 // MIDDLEWARE DE AUTENTICAÇÃO (Aplicado a partir daqui)
