@@ -474,6 +474,24 @@ const http = require('http');
             )
         `);
         console.log('✅ Migração operational_requests concluída.');
+
+        // Seed do template de cobrança de horas, se ainda não existir.
+        // O admin pode editar o conteúdo na tela Comunicação > Templates.
+        // Variáveis: {{responsavel}}, {{primeiro_nome}}, {{veiculo}}, {{obra}}, {{dias}}
+        const TEMPLATE_COBRANCA_HORAS = 'Cobrança de Horas — Operacional';
+        const conteudoPadrao =
+            'Olá, {{primeiro_nome}}! Tudo bem? 😊\n\n' +
+            'Notamos que o lançamento de horas do equipamento *{{veiculo}}* na obra *{{obra}}* está pendente há *{{dias}} dia(s)*.\n\n' +
+            'Por gentileza, poderia regularizar o registro das horas assim que possível? Isso nos ajuda a manter o controle da obra em dia.\n\n' +
+            'Agradecemos a colaboração! 🙏\n— Equipe MAK Serviços';
+        const [existing] = await db.query('SELECT id FROM message_templates WHERE name = ?', [TEMPLATE_COBRANCA_HORAS]);
+        if (!existing || existing.length === 0) {
+            await db.query(
+                'INSERT INTO message_templates (name, channel, content) VALUES (?, ?, ?)',
+                [TEMPLATE_COBRANCA_HORAS, 'whatsapp', conteudoPadrao]
+            );
+            console.log('✅ Template padrão de cobrança de horas inserido.');
+        }
     } catch (e) {
         console.warn('⚠️ [migration] operational_requests:', e.message);
     }

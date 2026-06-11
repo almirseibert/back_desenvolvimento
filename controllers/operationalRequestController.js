@@ -132,19 +132,30 @@ const solicitarRelatorio = async (req, res) => {
         }
 
         const primeiroNome = (emp.nome || '').trim().split(/\s+/)[0] || 'colega';
-        const equipamento = veiculo_registro ? `*${veiculo_registro}*` : 'o equipamento';
-        const naObra = obra_nome ? ` na obra *${obra_nome}*` : '';
         const diasNum = dias != null ? parseInt(dias, 10) : null;
-        const trechoPendencia = (diasNum != null && !isNaN(diasNum))
-            ? `está pendente há *${diasNum} dia(s)*`
-            : 'ainda não possui nenhum lançamento de horas registrado';
+        const diasTexto = (diasNum != null && !isNaN(diasNum))
+            ? String(diasNum)
+            : 'vários';
 
-        const mensagem =
-            `Olá, ${primeiroNome}! Tudo bem? 😊\n\n` +
-            `Notamos que o lançamento de horas do equipamento ${equipamento}${naObra} ${trechoPendencia}.\n\n` +
-            `Por gentileza, poderia regularizar o registro das horas assim que possível? ` +
-            `Isso nos ajuda a manter o controle da obra em dia.\n\n` +
-            `Agradecemos a colaboração! 🙏\n— Equipe MAK Serviços`;
+        // Carrega o template editável pelo admin (Comunicação > Templates).
+        // Fallback: usa o conteúdo padrão caso o registro tenha sido removido.
+        const TEMPLATE_NAME = 'Cobrança de Horas — Operacional';
+        const FALLBACK =
+            'Olá, {{primeiro_nome}}! Tudo bem? 😊\n\n' +
+            'Notamos que o lançamento de horas do equipamento *{{veiculo}}* na obra *{{obra}}* está pendente há *{{dias}} dia(s)*.\n\n' +
+            'Por gentileza, poderia regularizar o registro das horas assim que possível? Isso nos ajuda a manter o controle da obra em dia.\n\n' +
+            'Agradecemos a colaboração! 🙏\n— Equipe MAK Serviços';
+        const [tplRows] = await db.query('SELECT content FROM message_templates WHERE name = ? LIMIT 1', [TEMPLATE_NAME]);
+        const conteudo = tplRows[0]?.content || FALLBACK;
+
+        const vars = {
+            responsavel: emp.nome || '',
+            primeiro_nome: primeiroNome,
+            veiculo: veiculo_registro || 'o equipamento',
+            obra: obra_nome || 'a obra',
+            dias: diasTexto,
+        };
+        const mensagem = conteudo.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] != null ? String(vars[k]) : `{{${k}}}`);
 
         const enviados = [];
         const erros = [];
