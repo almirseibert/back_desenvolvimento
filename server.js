@@ -492,11 +492,37 @@ const http = require('http');
             'Notamos que o lançamento de horas do equipamento *{{veiculo}}* na obra *{{obra}}* está pendente há *{{dias}} dia(s)*.\n\n' +
             'Por gentileza, poderia regularizar o registro das horas assim que possível? Isso nos ajuda a manter o controle da obra em dia.\n\n' +
             'Agradecemos a colaboração! 🙏\n— Equipe MAK Serviços';
-        const [existing] = await db.query('SELECT id FROM message_templates WHERE name = ?', [TEMPLATE_COBRANCA_HORAS]);
+        // Garante que a tabela e a coluna event_key existam antes do seed —
+        // o ALTER em adminRoutes.js pode ainda não ter rodado nesta ordem de boot.
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS message_templates (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                channel VARCHAR(20) NOT NULL DEFAULT 'whatsapp',
+                content TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        try {
+            const [cols] = await db.query("SHOW COLUMNS FROM message_templates LIKE 'event_key'");
+            if (!cols || cols.length === 0) {
+                await db.query("ALTER TABLE message_templates ADD COLUMN event_key VARCHAR(60) NULL UNIQUE AFTER id");
+            }
+        } catch (e) {
+            console.warn('[migration] message_templates.event_key (server.js):', e.message);
+        }
+        await db.query(
+            "UPDATE message_templates SET event_key = 'cobranca_horas_operacional' WHERE event_key IS NULL AND name = ?",
+            [TEMPLATE_COBRANCA_HORAS]
+        );
+        const [existing] = await db.query(
+            "SELECT id FROM message_templates WHERE event_key = 'cobranca_horas_operacional' OR name = ? LIMIT 1",
+            [TEMPLATE_COBRANCA_HORAS]
+        );
         if (!existing || existing.length === 0) {
             await db.query(
-                'INSERT INTO message_templates (name, channel, content) VALUES (?, ?, ?)',
-                [TEMPLATE_COBRANCA_HORAS, 'whatsapp', conteudoPadrao]
+                'INSERT INTO message_templates (event_key, name, channel, content) VALUES (?, ?, ?, ?)',
+                ['cobranca_horas_operacional', TEMPLATE_COBRANCA_HORAS, 'whatsapp', conteudoPadrao]
             );
             console.log('✅ Template padrão de cobrança de horas inserido.');
         }

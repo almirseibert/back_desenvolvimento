@@ -7,6 +7,7 @@ const db = require('../database');
 const whatsappService = require('../services/whatsappService');
 const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
+const { EVENT_CATALOG, isKnownEvent } = require('../services/notificationEvents');
 
 router.use(authMiddleware);
 
@@ -45,6 +46,20 @@ const initAdminTables = async () => {
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         `);
+        // Adiciona event_key se a tabela já existia sem ele (migration idempotente).
+        try {
+            const [cols] = await db.query("SHOW COLUMNS FROM message_templates LIKE 'event_key'");
+            if (!cols || cols.length === 0) {
+                await db.query("ALTER TABLE message_templates ADD COLUMN event_key VARCHAR(60) NULL UNIQUE AFTER id");
+            }
+            // Backfill: o template de cobrança de horas era buscado por nome.
+            await db.query(
+                "UPDATE message_templates SET event_key = 'cobranca_horas_operacional' WHERE event_key IS NULL AND name = ?",
+                ['Cobrança de Horas — Operacional']
+            );
+        } catch (e) {
+            console.warn('⚠️ [migration] message_templates.event_key:', e.message);
+        }
         await db.query(`
             CREATE TABLE IF NOT EXISTS admin_holidays (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -558,6 +573,71 @@ router.delete('/message-templates/:id', adminOnly, async (req, res) => {
         res.json({ message: 'Template removido.' });
     } catch (error) {
         res.status(500).json({ error: 'Erro ao remover template.' });
+    }
+});
+
+// ─── TEMPLATES POR EVENTO (catálogo) ──────────────────────────────────────────
+// Modelo novo: a UI lista os eventos do catálogo (notificationEvents.js) e
+// permite ao admin sobrescrever o corpo. Excluir = voltar ao default; nunca
+// "ficar sem template", pois o dispatcher cai no padrão do catálogo.
+
+router.get('/message-templates/catalog', adminOnly, async (req, res) => {
+    try {
+        const [rows] = await db.query(
+            'SELECT event_key, channel, content FROM message_templates WHERE event_key IS NOT NULL'
+        );
+        const overrides = rows.reduce((acc, r) => { acc[r.event_key] = r; return acc; }, {});
+        const items = EVENT_CATALOG.map(ev => {
+            const ov = overrides[ev.key];
+            return {
+                key: ev.key,
+                label: ev.label,
+                area: ev.area,
+                variables: ev.variables,
+                defaultBody: ev.defaultBody,
+                channel: ov?.channel || 'whatsapp',
+                customBody: ov ? ov.content : null,
+                customized: Boolean(ov),
+            };
+        });
+        res.json(items);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao carregar catálogo de templates.' });
+    }
+});
+
+router.put('/message-templates/by-event/:eventKey', adminOnly, async (req, res) => {
+    const { eventKey } = req.params;
+    const { channel, content } = req.body;
+    if (!isKnownEvent(eventKey)) return res.status(400).json({ error: 'Evento desconhecido.' });
+    if (!content || !String(content).trim()) return res.status(400).json({ error: 'Conteúdo é obrigatório.' });
+    const ch = channel || 'whatsapp';
+    try {
+        const [existing] = await db.query('SELECT id FROM message_templates WHERE event_key = ? LIMIT 1', [eventKey]);
+        if (existing.length > 0) {
+            await db.query(
+                'UPDATE message_templates SET channel = ?, content = ? WHERE event_key = ?',
+                [ch, content, eventKey]
+            );
+        } else {
+            await db.query(
+                'INSERT INTO message_templates (event_key, name, channel, content) VALUES (?, ?, ?, ?)',
+                [eventKey, eventKey, ch, content]
+            );
+        }
+        res.json({ event_key: eventKey, channel: ch, content });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao salvar template do evento.' });
+    }
+});
+
+router.delete('/message-templates/by-event/:eventKey', adminOnly, async (req, res) => {
+    const { eventKey } = req.params;
+    try {
+        await db.query('DELETE FROM message_templates WHERE event_key = ?', [eventKey]);
+        res.json({ message: 'Template voltou ao padrão.' });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao resetar template.' });
     }
 });
 

@@ -150,15 +150,14 @@ const solicitarRelatorio = async (req, res) => {
             : 'vários';
 
         // Carrega o template editável pelo admin (Comunicação > Templates).
-        // Fallback: usa o conteúdo padrão caso o registro tenha sido removido.
-        const TEMPLATE_NAME = 'Cobrança de Horas — Operacional';
-        const FALLBACK =
-            'Olá, {{primeiro_nome}}! Tudo bem? 😊\n\n' +
-            'Notamos que o lançamento de horas do equipamento *{{veiculo}}* na obra *{{obra}}* está pendente há *{{dias}} dia(s)*.\n\n' +
-            'Por gentileza, poderia regularizar o registro das horas assim que possível? Isso nos ajuda a manter o controle da obra em dia.\n\n' +
-            'Agradecemos a colaboração! 🙏\n— Equipe MAK Serviços';
-        const [tplRows] = await db.query('SELECT content FROM message_templates WHERE name = ? LIMIT 1', [TEMPLATE_NAME]);
-        const conteudo = tplRows[0]?.content || FALLBACK;
+        // Vínculo por event_key — se o admin "resetar", cai no default do catálogo.
+        const { getEvent } = require('../services/notificationEvents');
+        const EVENT_KEY = 'cobranca_horas_operacional';
+        const [tplRows] = await db.query(
+            'SELECT content FROM message_templates WHERE event_key = ? LIMIT 1',
+            [EVENT_KEY]
+        );
+        const conteudo = tplRows[0]?.content || getEvent(EVENT_KEY)?.defaultBody || '';
 
         const vars = {
             responsavel: emp.nome || '',

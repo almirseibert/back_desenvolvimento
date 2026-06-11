@@ -12,6 +12,7 @@
 const db = require('../database');
 const whatsappService = require('./whatsappService');
 const { sendEmail } = require('./emailService');
+const { renderBody } = require('./notificationEvents');
 
 const fmtDate = (d) => {
     if (!d) return '—';
@@ -103,13 +104,32 @@ const TEMPLATES = {
     },
 };
 
-const renderTemplate = (eventType, payload) => {
+// Busca override editado pelo admin (Comunicação > Templates) — se existir,
+// substitui o BODY do template hardcoded; o subject e formatação rica do
+// catálogo TEMPLATES seguem valendo.
+const getDbOverride = async (eventType) => {
+    try {
+        const [rows] = await db.query(
+            'SELECT content FROM message_templates WHERE event_key = ? LIMIT 1',
+            [eventType]
+        );
+        return rows[0]?.content || null;
+    } catch (_) { return null; }
+};
+
+const renderTemplate = async (eventType, payload) => {
     const tpl = TEMPLATES[eventType];
-    if (tpl) return tpl(payload || {});
-    return {
-        subject: `Notificação: ${eventType}`,
-        body: `Evento *${eventType}* disparado.\n\nDetalhes:\n${JSON.stringify(payload || {}, null, 2)}`,
-    };
+    const base = tpl
+        ? tpl(payload || {})
+        : {
+            subject: `Notificação: ${eventType}`,
+            body: `Evento *${eventType}* disparado.\n\nDetalhes:\n${JSON.stringify(payload || {}, null, 2)}`,
+        };
+    const override = await getDbOverride(eventType);
+    if (override) {
+        return { ...base, body: renderBody(override, payload || {}) };
+    }
+    return base;
 };
 
 // ─── Resolução de destinos ────────────────────────────────────────────────────
@@ -162,7 +182,7 @@ const dispatch = async (eventType, payload = {}, opts = {}) => {
             return { dispatched: 0, skipped: 0, reason: 'no_targets' };
         }
 
-        const { subject, body, anexoUrl } = renderTemplate(eventType, payload);
+        const { subject, body, anexoUrl } = await renderTemplate(eventType, payload);
         const resolved = await resolveTargets(targets);
 
         // Deduplica por (channel + contact) para não enviar 2x ao mesmo destino
