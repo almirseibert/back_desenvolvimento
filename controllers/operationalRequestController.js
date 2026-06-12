@@ -123,50 +123,82 @@ const deletarRequisicao = async (req, res) => {
 
 // Cobrança educada das horas pendentes diretamente ao operador (WhatsApp/email).
 // Não persiste estado — apenas dispara a mensagem nos canais disponíveis.
-const solicitarRelatorio = async (req, res) => {
-    const { employeeId, veiculo_registro, obra_nome, dias } = req.body;
+// Resolve operador + mensagem para uma cobrança de horas. Compartilhado pelo
+// preview (mostra ao usuário antes de enviar) e pelo envio real.
+const montarPayloadRelatorio = async ({ employeeId, veiculo_registro, obra_nome, dias }) => {
+    const [rows] = await db.query(
+        'SELECT nome, contato, email FROM employees WHERE id = ?',
+        [employeeId]
+    );
+    const emp = rows[0];
+    if (!emp) {
+        const err = new Error('Operador não encontrado.');
+        err.status = 404;
+        throw err;
+    }
+    if (!emp.contato && !emp.email) {
+        const err = new Error('Operador sem WhatsApp ou e-mail cadastrado.');
+        err.status = 422;
+        throw err;
+    }
 
-    if (!employeeId) {
+    const primeiroNome = (emp.nome || '').trim().split(/\s+/)[0] || 'colega';
+    const diasNum = dias != null ? parseInt(dias, 10) : null;
+    const diasTexto = (diasNum != null && !isNaN(diasNum)) ? String(diasNum) : 'vários';
+
+    const { getEvent } = require('../services/notificationEvents');
+    const EVENT_KEY = 'cobranca_horas_operacional';
+    const [tplRows] = await db.query(
+        'SELECT content FROM message_templates WHERE event_key = ? LIMIT 1',
+        [EVENT_KEY]
+    );
+    const conteudo = tplRows[0]?.content || getEvent(EVENT_KEY)?.defaultBody || '';
+
+    const vars = {
+        responsavel: emp.nome || '',
+        primeiro_nome: primeiroNome,
+        veiculo: veiculo_registro || 'o equipamento',
+        obra: obra_nome || 'a obra',
+        dias: diasTexto,
+    };
+    const mensagem = conteudo.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] != null ? String(vars[k]) : `{{${k}}}`);
+
+    const canais = [];
+    if (emp.contato) canais.push('whatsapp');
+    if (emp.email) canais.push('email');
+
+    return { emp, mensagem, canais };
+};
+
+const previewRelatorio = async (req, res) => {
+    if (!req.body?.employeeId) {
+        return res.status(400).json({ error: 'Operador não informado.' });
+    }
+    try {
+        const { emp, mensagem, canais } = await montarPayloadRelatorio(req.body);
+        res.json({
+            operador: {
+                nome: emp.nome || '',
+                contato: emp.contato || null,
+                email: emp.email || null,
+            },
+            mensagem,
+            canais,
+        });
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
+        console.error('Erro no preview do relatório de horas:', error);
+        res.status(500).json({ error: 'Erro ao montar preview da cobrança.' });
+    }
+};
+
+const solicitarRelatorio = async (req, res) => {
+    if (!req.body?.employeeId) {
         return res.status(400).json({ error: 'Operador não informado.' });
     }
 
     try {
-        const [rows] = await db.query(
-            'SELECT nome, contato, email FROM employees WHERE id = ?',
-            [employeeId]
-        );
-        const emp = rows[0];
-        if (!emp) {
-            return res.status(404).json({ error: 'Operador não encontrado.' });
-        }
-        if (!emp.contato && !emp.email) {
-            return res.status(422).json({ error: 'Operador sem WhatsApp ou e-mail cadastrado.' });
-        }
-
-        const primeiroNome = (emp.nome || '').trim().split(/\s+/)[0] || 'colega';
-        const diasNum = dias != null ? parseInt(dias, 10) : null;
-        const diasTexto = (diasNum != null && !isNaN(diasNum))
-            ? String(diasNum)
-            : 'vários';
-
-        // Carrega o template editável pelo admin (Comunicação > Templates).
-        // Vínculo por event_key — se o admin "resetar", cai no default do catálogo.
-        const { getEvent } = require('../services/notificationEvents');
-        const EVENT_KEY = 'cobranca_horas_operacional';
-        const [tplRows] = await db.query(
-            'SELECT content FROM message_templates WHERE event_key = ? LIMIT 1',
-            [EVENT_KEY]
-        );
-        const conteudo = tplRows[0]?.content || getEvent(EVENT_KEY)?.defaultBody || '';
-
-        const vars = {
-            responsavel: emp.nome || '',
-            primeiro_nome: primeiroNome,
-            veiculo: veiculo_registro || 'o equipamento',
-            obra: obra_nome || 'a obra',
-            dias: diasTexto,
-        };
-        const mensagem = conteudo.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] != null ? String(vars[k]) : `{{${k}}}`);
+        const { emp, mensagem } = await montarPayloadRelatorio(req.body);
 
         const enviados = [];
         const erros = [];
@@ -206,4 +238,5 @@ module.exports = {
     resolverRequisicao,
     deletarRequisicao,
     solicitarRelatorio,
+    previewRelatorio,
 };

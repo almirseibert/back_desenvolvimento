@@ -8,6 +8,7 @@ router.use(authMiddleware);
 
 router.get('/', controller.listarRequisicoes);
 router.post('/', controller.criarRequisicao);
+router.post('/solicitar-relatorio/preview', controller.previewRelatorio);
 router.post('/solicitar-relatorio', controller.solicitarRelatorio);
 router.put('/:id/resolver', controller.resolverRequisicao);
 router.delete('/:id', controller.deletarRequisicao);
