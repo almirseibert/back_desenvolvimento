@@ -409,6 +409,7 @@ const createRefuelingOrder = async (req, res) => {
         //    por nós; apenas registramos consumo para faturamento.
         // FOR UPDATE serializa contra criações concorrentes dentro da transação.
         let isOutsourcedVehicle = false;
+        let allowMultiple = false;
         if (data.vehicleId) {
             const FERIADOS_BR_FIXOS = new Set([
                 '01-01', '04-21', '05-01', '09-07',
@@ -422,7 +423,7 @@ const createRefuelingOrder = async (req, res) => {
                 'SELECT permiteMultiplosAbastecimentos, isOutsourced FROM vehicles WHERE id = ?',
                 [data.vehicleId]
             );
-            const allowMultiple = vehicleRows.length > 0
+            allowMultiple = vehicleRows.length > 0
                 && (vehicleRows[0].permiteMultiplosAbastecimentos == 1 || vehicleRows[0].permiteMultiplosAbastecimentos === true);
             // Veículos terceirizados não estão sob nossas regras de gestão de frota
             // (leitura, orçamento, operador placeholder, ordem em aberto): a operação
@@ -499,7 +500,11 @@ const createRefuelingOrder = async (req, res) => {
         }
 
         // Terceirizados pulam validações de leitura e orçamento (frota não gerida por nós).
-        const motivoLeitura = isOutsourcedVehicle ? null : await checkLeituraBloqueada(
+        // Veículos fictícios (permiteMultiplosAbastecimentos=1: ajuda de custo, gerador,
+        // lava-jato etc.) também pulam o bloqueio de leitura — eles aceitam qualquer
+        // valor de km/Hr e a ordem nunca deve cair na fila de liberação da Administração.
+        const skipLeituraCheck = isOutsourcedVehicle || allowMultiple;
+        const motivoLeitura = skipLeituraCheck ? null : await checkLeituraBloqueada(
             connection, data.vehicleId,
             data.odometro != null ? parseFloat(data.odometro) : null,
             data.horimetro != null ? parseFloat(data.horimetro) : null
