@@ -132,15 +132,23 @@ const createVehicle = async (req, res) => {
     }
 };
 
-// Whitelist de colunas permitidas em UPDATE — evita SQL injection por nome de campo
+// Whitelist de colunas permitidas em UPDATE — evita SQL injection por nome de campo.
+// Mantida em sincronia com os campos enviados por VehicleModal e as colunas reais
+// da tabela `vehicles` (validade*, ano_*, fuelCapacity, mediaCalculo, rastreador,
+// nomeEmpresaTerceiro, contratoTerceiro, canCirculate). Campos legados (vencimento*,
+// apolice etc.) ficam por ora para não quebrar fluxos antigos.
 const ALLOWED_VEHICLE_FIELDS = new Set([
-    'placa', 'registroInterno', 'tipo', 'sub_tipo', 'marca', 'modelo', 'anoFabricacao', 'anoCombustivel',
+    'placa', 'registroInterno', 'tipo', 'sub_tipo', 'marca', 'modelo',
+    'anoFabricacao', 'anoCombustivel', 'ano_fabricacao', 'ano_modelo',
     'status', 'localizacaoAtual', 'obraAtualId', 'fotoURL', 'cor', 'renavam', 'chassi',
     'proprietario', 'seguradora', 'apolice', 'vencimentoSeguro', 'vencimentoCRLV',
     'vencimentoLicenca', 'vencimentoExtintor', 'vencimentoTacografo',
-    'fuelLevels', 'alocadoEm', 'maintenanceLocation', 'operationalAssignment',
-    'odometro', 'horimetro', 'hodometro', 'capacidadeTanque', 'tipoCombustivel',
-    'observacoes', 'proximaRevisaoOdometro', 'proximaRevisaoHorimetro', 'proximaRevisaoData',
+    'validadeTacografo', 'validadeAET_DAER', 'validadeAET_DNIT',
+    'canCirculate', 'rastreador', 'nomeEmpresaTerceiro', 'contratoTerceiro',
+    'fuelLevels', 'fuelCapacity', 'alocadoEm', 'maintenanceLocation', 'operationalAssignment',
+    'odometro', 'horimetro', 'hodometro', 'capacidade', 'capacidadeTanque', 'tipoCombustivel',
+    'mediaCalculo', 'observacoes', 'avisoTexto', 'possuiAviso',
+    'proximaRevisaoOdometro', 'proximaRevisaoHorimetro', 'proximaRevisaoData',
     'tamanho', 'capacidadeCarga', 'numeroPneus', 'numeroEixos',
     'media_consumo', 'percentual_tolerancia',
     'isComboioVehicle', 'ativo', 'isSucata', 'isOutsourced',

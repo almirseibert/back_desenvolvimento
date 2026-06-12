@@ -79,22 +79,43 @@ const whatsappService = {
                 payload.documentMimetype = anexoMimetype || 'application/pdf';
             }
 
+            // PDF anexado (base64) chega facilmente a 200–600 KB; com o microsserviço
+            // tendo que primeiro mandar o texto e depois subir a mídia via WA Web, 15 s
+            // estourava antes do anexo chegar — text saía, PDF não. Subimos para 120 s,
+            // e também elevamos os limits do axios para o body grande não ser truncado.
             const { data } = await axios.post(
                 `${WA_URL}/send`,
                 payload,
-                { headers: waHeaders(), timeout: 15000 }
+                {
+                    headers: waHeaders(),
+                    timeout: 120000,
+                    maxBodyLength: 50 * 1024 * 1024,
+                    maxContentLength: 50 * 1024 * 1024,
+                }
             );
 
             const messageId = data.messageId || null;
+            // O microsserviço retorna pdfStatus = 'enviado' | 'falha: <msg>' | null.
+            // Quando há anexo solicitado mas o WA Web falhou em enviá-lo, registramos
+            // como PARCIAL para ficar visível nos logs/admin que o PDF não chegou.
+            const pediuAnexo = !!(anexoBase64 || anexoUrl);
+            const pdfStatus = data.pdfStatus || null;
+            const statusFinal = pediuAnexo
+                ? (pdfStatus === 'enviado' ? 'ENVIADO' : (pdfStatus ? 'PARCIAL' : 'ENVIADO'))
+                : 'ENVIADO';
 
             await db.query(
                 `INSERT INTO whatsapp_logs
                  (destinatario_nome, destinatario_numero, motivo_envio, mensagem, anexo_url, message_id_api, status)
                  VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [nomeDestinatario, numeroFormatado, motivo, mensagem, anexoUrl, messageId, 'ENVIADO']
+                [nomeDestinatario, numeroFormatado, motivo, mensagem, anexoUrl, messageId, statusFinal]
             );
 
-            console.log(`✅ Mensagem enviada para ${nomeDestinatario} (${numeroFormatado})`);
+            if (pediuAnexo && pdfStatus && pdfStatus !== 'enviado') {
+                console.warn(`⚠️ Mensagem enviada para ${nomeDestinatario} (${numeroFormatado}) — PDF: ${pdfStatus}`);
+            } else {
+                console.log(`✅ Mensagem enviada para ${nomeDestinatario} (${numeroFormatado})${pediuAnexo ? ' (com PDF)' : ''}`);
+            }
             return data;
 
         } catch (error) {
