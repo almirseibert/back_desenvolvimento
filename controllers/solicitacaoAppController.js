@@ -209,32 +209,10 @@ const criarSolicitacao = async (req, res) => {
             });
         }
 
-        // 3. Trava Orçamentária — terceirizados não usam o orçamento da obra.
-        const [obras] = isOutsourcedVehicle ? [[]] : await connection.execute('SELECT * FROM obras WHERE id = ?', [obra_id]);
-        if (obras.length > 0) {
-            const valorContrato = parseFloat(obras[0].valorContrato || 0);
-            if (valorContrato > 0) {
-                 const [expenses] = await connection.execute("SELECT SUM(amount) as total FROM expenses WHERE obraId = ? AND category = 'Combustível'", [obra_id]);
-                 const totalGasto = safeNum(expenses[0].total);
-                 const custoEst = (flag_tanque_cheio ? 200 : safeNum(litragem)) * 6.50;
-                 if ((totalGasto + custoEst) > (valorContrato * 0.20)) {
-                    const msg = 'Limite orçamentário de combustível (20% do contrato) excedido para esta obra.';
-                    await connection.rollback();
-                    if (req.file) fs.unlinkSync(req.file.path);
-                    await registrarErro({
-                        usuarioId, usuarioNome, veiculoId: veiculo_id, veiculoPlaca: veiculo.placa, obraId: obra_id,
-                        campoErro: 'obraId', tipoErro: 'orcamento', mensagem: msg,
-                        valorInformado: (totalGasto + custoEst).toFixed(2),
-                        valorAnterior:  (valorContrato * 0.20).toFixed(2)
-                    });
-                    return res.status(400).json({
-                        error: msg,
-                        campo: 'obraId',
-                        tipo: 'orcamento'
-                    });
-                 }
-            }
-        }
+        // 3. Trava Orçamentária (20%): aplicada exclusivamente na emissão da ordem
+        // pelo setor de frotas (refuelingController → status 'BloqueadoOrcamento'),
+        // liberável em Administração > Frota > Abastecimento. O app do operador não
+        // bloqueia mais o envio da solicitação — mantém-se uma única trava de 20%.
 
         // 5. Preparar Dados
         let obsFinal = observacao || '';
