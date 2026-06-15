@@ -148,7 +148,7 @@ const getMe = async (req, res) => {
         let rows;
         try {
             [rows] = await db.query(
-                'SELECT id, name, email, username, role, user_type, status, canAccessRefueling, bloqueado_abastecimento, employeeId FROM users WHERE id = ?',
+                'SELECT id, name, email, username, role, user_type, status, canAccessRefueling, canAccessAnaliseGerencial, bloqueado_abastecimento, employeeId FROM users WHERE id = ?',
                 [req.user.id]
             );
         } catch (colErr) {
