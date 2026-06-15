@@ -391,6 +391,8 @@ cron.schedule('* * * * *', async () => {
                 // TESTE, MAK SERVIÇOS etc.) e que estão assim há mais de 7 dias.
                 // Dispara um único evento agregando todos numa só mensagem para
                 // não inundar o destinatário (Plinio, configurado em notification_targets).
+                // Veículos de terceiros são ignorados: eles legitimamente ficam com
+                // operador fictício durante a obra, pois os operadores não são contratados nossos.
                 try {
                     const [placeholders] = await db.query(`
                         SELECT v.id, v.placa, v.registroInterno,
@@ -403,6 +405,7 @@ cron.schedule('* * * * *', async () => {
                           LEFT  JOIN obras     o ON o.id = h.obraId
                          WHERE h.dataSaida IS NULL
                            AND e.isPlaceholder = 1
+                           AND (v.isOutsourced IS NULL OR v.isOutsourced != 1)
                            AND h.dataEntrada <= DATE_SUB(NOW(), INTERVAL 7 DAY)
                          ORDER BY h.dataEntrada ASC
                     `);
