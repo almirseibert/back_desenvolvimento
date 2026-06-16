@@ -16,6 +16,7 @@ router.get('/allocations', controller.getAllocationForecast);
 
 // Rotas de BI (Análise de Produtividade)
 router.get('/analytics', controller.getAnalyticsData);
+router.get('/analytics/dia', controller.getAnalyticsDayDetail);
 
 // Novas Rotas para guardar e ler os Tickets Médios globais
 router.get('/tickets', controller.getTicketMedio);

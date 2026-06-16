@@ -380,127 +380,400 @@ function getStatusColor(perc) {
 // ==================================================================================
 // BI E ANÁLISE DE PRODUTIVIDADE
 // ==================================================================================
+// Helpers internos
+const HORAS_POR_DIA = 8;
+const TIPOS_EXCLUIDOS_PRODUTIVOS = [
+    'Leve', 'Passeio', 'Utilitario', 'Moto', 'Administrativo', 'Carro',
+    'Automóvel', 'Camionete', 'Semirreboques', 'Caminhão Carroceria', 'Caminhão Prancha'
+];
+
+const _isBusinessDay = (dateStr) => {
+    const d = new Date(dateStr + 'T12:00:00');
+    const wd = d.getDay();
+    return wd !== 0 && wd !== 6;
+};
+
+const _fmtDate = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+
+const _diffDays = (startStr, endStr) => {
+    const s = new Date(startStr + 'T12:00:00');
+    const e = new Date(endStr + 'T12:00:00');
+    return Math.round((e - s) / 86400000) + 1;
+};
+
+const _businessDayList = (startStr, endStr) => {
+    const out = [];
+    const cur = new Date(startStr + 'T12:00:00');
+    const end = new Date(endStr + 'T12:00:00');
+    while (cur <= end) {
+        out.push({ date: _fmtDate(cur), isBusinessDay: _isBusinessDay(_fmtDate(cur)) });
+        cur.setDate(cur.getDate() + 1);
+    }
+    return out;
+};
+
+/**
+ * Computa as métricas de aproveitamento entre [startDate, endDate] inclusive,
+ * filtrado por obraId opcional (ou 'geral').
+ *
+ * Capacidade líquida = (qtd de veículos produtivos no momento) × HORAS_POR_DIA
+ *                       × (dias úteis do período)
+ *   − (qtd em manutenção HOJE × HORAS_POR_DIA × dias úteis do período)
+ *
+ * Limitações conhecidas:
+ *   - Não temos histórico per-day de status do veículo nem disponibilidade
+ *     de operador. O snapshot atual de "em manutenção" é usado como
+ *     proxy do período inteiro.
+ *   - Feriados não são removidos (não há tabela de feriados).
+ */
+async function _computeAnalyticsCore(obraId, startDate, endDate) {
+    const isGeral = !obraId || obraId === 'geral';
+
+    // 1) Snapshot da frota produtiva
+    let vehiclesQuery = `
+        SELECT v.id, v.modelo, v.registroInterno, v.tipo, v.status, v.obraAtualId,
+               (CASE
+                 WHEN v.status = 'Ativo' AND v.obraAtualId IS NOT NULL THEN 'em_obra'
+                 WHEN v.status = 'Disponível' OR v.status = 'Ativo' THEN 'disponivel'
+                 WHEN v.status IN ('Em Manutenção', 'Aguardando Manutenção', 'Em Manutencao') THEN 'manutencao'
+                 WHEN v.status = 'Sucata' THEN 'sucata'
+                 ELSE 'disponivel'
+               END) as estado_calculado
+        FROM vehicles v
+        WHERE v.tipo NOT IN (${TIPOS_EXCLUIDOS_PRODUTIVOS.map(() => '?').join(',')})
+          AND (v.ativo IS NULL OR v.ativo != 0)
+          AND (v.isOutsourced IS NULL OR v.isOutsourced != 1)
+    `;
+    const [allVehicles] = await db.query(vehiclesQuery, TIPOS_EXCLUIDOS_PRODUTIVOS);
+
+    // Filtra escopo (visão geral ou obra específica)
+    const scopedVehicles = allVehicles.filter(v => {
+        if (v.estado_calculado === 'sucata') return false;
+        if (isGeral) return true;
+        return String(v.obraAtualId) === String(obraId);
+    });
+
+    const qtdVeiculos = scopedVehicles.length;
+    const qtdManutencao = scopedVehicles.filter(v => v.estado_calculado === 'manutencao').length;
+
+    // 2) Calendário do período
+    const cal = _businessDayList(startDate, endDate);
+    const diasTotais = cal.length;
+    const diasUteis = cal.filter(c => c.isBusinessDay).length || 1;
+
+    const capDiariaBruta = qtdVeiculos * HORAS_POR_DIA;
+    const capDiariaLiquida = Math.max(0, (qtdVeiculos - qtdManutencao)) * HORAS_POR_DIA;
+    const capPeriodoLiquida = capDiariaLiquida * diasUteis;
+    const horasPerdidasManutencao = qtdManutencao * HORAS_POR_DIA * diasUteis;
+
+    // 3) Logs de produção por dia
+    let logsParams = [startDate, endDate];
+    let logsCondObra = '';
+    if (!isGeral) { logsCondObra = ' AND l.obraId = ?'; logsParams.push(obraId); }
+
+    const [logsDia] = await db.query(`
+        SELECT DATE_FORMAT(l.date, '%Y-%m-%d') as data_log, SUM(l.totalHours) as horas
+        FROM daily_work_logs l
+        WHERE l.date BETWEEN ? AND ?${logsCondObra}
+        GROUP BY data_log
+    `, logsParams);
+    const logsMap = new Map(logsDia.map(r => [r.data_log, parseFloat(r.horas) || 0]));
+
+    const chartData = cal.map(c => ({
+        date: c.date,
+        is_business_day: c.isBusinessDay,
+        horas_faturadas: logsMap.get(c.date) || 0,
+        capacidade_dia: c.isBusinessDay ? capDiariaLiquida : 0,
+    }));
+
+    const horasExecutadas = chartData.reduce((s, c) => s + c.horas_faturadas, 0);
+    const aproveitamento = capPeriodoLiquida > 0 ? (horasExecutadas / capPeriodoLiquida) * 100 : 0;
+    const horasPerdidasTotal = Math.max(0, capPeriodoLiquida - horasExecutadas);
+
+    // 4) Breakdown por tipo
+    const frotaPorTipo = {};
+    scopedVehicles.forEach(v => {
+        const tipo = v.tipo || 'Outros';
+        if (!frotaPorTipo[tipo]) frotaPorTipo[tipo] = { qtd: 0, qtdManutencao: 0, horas_executadas: 0 };
+        frotaPorTipo[tipo].qtd += 1;
+        if (v.estado_calculado === 'manutencao') frotaPorTipo[tipo].qtdManutencao += 1;
+    });
+
+    let tipoParams = [startDate, endDate];
+    let tipoCondObra = '';
+    if (!isGeral) { tipoCondObra = ' AND l.obraId = ?'; tipoParams.push(obraId); }
+    const [tipoLogs] = await db.query(`
+        SELECT v.tipo, SUM(l.totalHours) as horas
+        FROM daily_work_logs l
+        JOIN vehicles v ON l.vehicleId = v.id
+        WHERE l.date BETWEEN ? AND ?${tipoCondObra}
+        GROUP BY v.tipo
+    `, tipoParams);
+    tipoLogs.forEach(t => {
+        const tipo = t.tipo || 'Outros';
+        if (!frotaPorTipo[tipo]) frotaPorTipo[tipo] = { qtd: 0, qtdManutencao: 0, horas_executadas: 0 };
+        frotaPorTipo[tipo].horas_executadas = parseFloat(t.horas) || 0;
+    });
+
+    const frotaPorTipoArr = Object.entries(frotaPorTipo).map(([tipo, info]) => {
+        const capDiaria = info.qtd * HORAS_POR_DIA;
+        const capPeriodo = Math.max(0, (info.qtd - info.qtdManutencao)) * HORAS_POR_DIA * diasUteis;
+        return {
+            tipo,
+            qtd: info.qtd,
+            qtdManutencao: info.qtdManutencao,
+            capDiaria,
+            capPeriodo,
+            horas_executadas: info.horas_executadas,
+            aproveitamento: capPeriodo > 0 ? (info.horas_executadas / capPeriodo) * 100 : 0,
+            horas_perdidas: Math.max(0, capPeriodo - info.horas_executadas),
+        };
+    }).sort((a, b) => a.aproveitamento - b.aproveitamento);
+
+    // 5) Ranking por OBRA (apenas em visão geral)
+    let porObra = [];
+    if (isGeral) {
+        // Agrupa snapshot de máquinas por obra
+        const machinesByObra = new Map(); // obraId → { qtd, qtdMan }
+        scopedVehicles.forEach(v => {
+            const oid = v.obraAtualId ? String(v.obraAtualId) : null;
+            if (!oid) return;
+            if (!machinesByObra.has(oid)) machinesByObra.set(oid, { qtd: 0, qtdMan: 0 });
+            const cur = machinesByObra.get(oid);
+            cur.qtd += 1;
+            if (v.estado_calculado === 'manutencao') cur.qtdMan += 1;
+        });
+
+        const [obraLogs] = await db.query(`
+            SELECT l.obraId, SUM(l.totalHours) as horas
+            FROM daily_work_logs l
+            WHERE l.date BETWEEN ? AND ?
+            GROUP BY l.obraId
+        `, [startDate, endDate]);
+        const obraLogsMap = new Map(obraLogs.map(r => [String(r.obraId), parseFloat(r.horas) || 0]));
+
+        const obraIds = Array.from(new Set([
+            ...machinesByObra.keys(),
+            ...obraLogsMap.keys(),
+        ])).filter(Boolean);
+
+        if (obraIds.length > 0) {
+            const placeholders = obraIds.map(() => '?').join(',');
+            const [obraInfo] = await db.query(`
+                SELECT o.id, o.nome, c.responsavel_nome, c.fiscal_nome
+                FROM obras o
+                LEFT JOIN obra_contracts c ON c.obra_id = o.id
+                WHERE o.id IN (${placeholders})
+            `, obraIds);
+            const obraInfoMap = new Map(obraInfo.map(r => [String(r.id), r]));
+
+            porObra = obraIds.map(oid => {
+                const snap = machinesByObra.get(oid) || { qtd: 0, qtdMan: 0 };
+                const capPeriodo = Math.max(0, (snap.qtd - snap.qtdMan)) * HORAS_POR_DIA * diasUteis;
+                const horas = obraLogsMap.get(oid) || 0;
+                const info = obraInfoMap.get(oid) || {};
+                return {
+                    obraId: oid,
+                    obraNome: info.nome || '(sem obra)',
+                    responsavel: info.responsavel_nome || null,
+                    fiscal: info.fiscal_nome || null,
+                    qtdVeiculos: snap.qtd,
+                    capPeriodo,
+                    horas_executadas: horas,
+                    aproveitamento: capPeriodo > 0 ? (horas / capPeriodo) * 100 : 0,
+                    horas_perdidas: Math.max(0, capPeriodo - horas),
+                };
+            }).sort((a, b) => a.aproveitamento - b.aproveitamento);
+        }
+    }
+
+    // 6) Ranking por VEÍCULO (com obra atual)
+    let veiculoParams = [startDate, endDate];
+    let veiculoCondObra = '';
+    if (!isGeral) { veiculoCondObra = ' AND l.obraId = ?'; veiculoParams.push(obraId); }
+    const [veiculoLogs] = await db.query(`
+        SELECT l.vehicleId, SUM(l.totalHours) as horas
+        FROM daily_work_logs l
+        WHERE l.date BETWEEN ? AND ?${veiculoCondObra}
+        GROUP BY l.vehicleId
+    `, veiculoParams);
+    const veiculoHorasMap = new Map(veiculoLogs.map(r => [String(r.vehicleId), parseFloat(r.horas) || 0]));
+
+    // Mapa obra→nome (para enriquecer)
+    const obraIdsUnicos = Array.from(new Set(scopedVehicles.map(v => v.obraAtualId).filter(Boolean))).map(String);
+    let obraNomeMap = new Map();
+    if (obraIdsUnicos.length) {
+        const ph = obraIdsUnicos.map(() => '?').join(',');
+        const [rows] = await db.query(`SELECT id, nome FROM obras WHERE id IN (${ph})`, obraIdsUnicos);
+        obraNomeMap = new Map(rows.map(r => [String(r.id), r.nome]));
+    }
+
+    const porVeiculo = scopedVehicles.map(v => {
+        const emManutencao = v.estado_calculado === 'manutencao';
+        const capPeriodo = emManutencao ? 0 : HORAS_POR_DIA * diasUteis;
+        const horas = veiculoHorasMap.get(String(v.id)) || 0;
+        return {
+            id: v.id,
+            registroInterno: v.registroInterno,
+            modelo: v.modelo,
+            tipo: v.tipo,
+            estado: v.estado_calculado,
+            obraId: v.obraAtualId ? String(v.obraAtualId) : null,
+            obraNome: v.obraAtualId ? (obraNomeMap.get(String(v.obraAtualId)) || '—') : '—',
+            capPeriodo,
+            horas_executadas: horas,
+            aproveitamento: capPeriodo > 0 ? (horas / capPeriodo) * 100 : 0,
+            horas_perdidas: Math.max(0, capPeriodo - horas),
+        };
+    }).sort((a, b) => a.aproveitamento - b.aproveitamento);
+
+    return {
+        range: { startDate, endDate, diasTotais, diasUteis },
+        summary: {
+            qtdVeiculos,
+            qtdManutencao,
+            capDiariaBruta,
+            capDiariaLiquida,
+            capPeriodoLiquida,
+            horasExecutadas,
+            horasPerdidasManutencao,
+            horasPerdidasTotal,
+            aproveitamento,
+            mediaExecutadaDiasUteis: diasUteis > 0 ? horasExecutadas / diasUteis : 0,
+        },
+        chartData,
+        frotaPorTipo: frotaPorTipoArr,
+        porObra,
+        porVeiculo,
+    };
+}
+
 exports.getAnalyticsData = async (req, res) => {
-    const { obraId, dias = 15 } = req.query;
-
     try {
-        const isGeral = !obraId || obraId === 'geral';
+        let { obraId, startDate, endDate, dias } = req.query;
 
-        // Filtros aplicados: Exclui inativos (ativo = 0), terceirizados (isOutsourced = 1) e tipos complementares
-        let vehiclesQuery = `
-            SELECT id, tipo, status, obraAtualId,
-                   (CASE 
-                     WHEN status = 'Ativo' AND obraAtualId IS NOT NULL THEN 'em_obra'
-                     WHEN status = 'Disponível' OR status = 'Ativo' THEN 'disponivel'
-                     WHEN status IN ('Em Manutenção', 'Aguardando Manutenção', 'Em Manutencao') THEN 'manutencao'
-                     WHEN status = 'Sucata' THEN 'sucata'
-                     ELSE 'disponivel'
-                   END) as estado_calculado
-            FROM vehicles 
-            WHERE tipo NOT IN ('Leve', 'Passeio', 'Utilitario', 'Moto', 'Administrativo', 'Carro', 'Automóvel', 'Camionete', 'Semirreboques', 'Caminhão Carroceria', 'Caminhão Prancha')
-              AND (ativo IS NULL OR ativo != 0)
-              AND (isOutsourced IS NULL OR isOutsourced != 1)
-        `;
-        const [vehicles] = await db.query(vehiclesQuery);
-
-        let capEmObra = 0, capDisponivel = 0, capManutencao = 0;
-        const frotaPorTipo = {};
-
-        vehicles.forEach(v => {
-            let countIt = false;
-            if (!isGeral) {
-                if (v.obraAtualId == obraId) countIt = true;
-            } else {
-                countIt = true;
-            }
-
-            if (countIt) {
-                if (v.estado_calculado === 'em_obra') capEmObra += 8;
-                else if (v.estado_calculado === 'disponivel' && isGeral) capDisponivel += 8; 
-                else if (v.estado_calculado === 'manutencao') capManutencao += 8;
-
-                if (v.estado_calculado !== 'sucata') {
-                    if (!frotaPorTipo[v.tipo]) frotaPorTipo[v.tipo] = { qtd: 0, cap: 0, horas_executadas: 0 };
-                    frotaPorTipo[v.tipo].qtd += 1;
-                    frotaPorTipo[v.tipo].cap += 8;
-                }
-            }
-        });
-
-        let logsQuery = `
-            SELECT DATE_FORMAT(l.date, '%Y-%m-%d') as data_log, SUM(l.totalHours) as horas
-            FROM daily_work_logs l
-            WHERE l.date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-        `;
-        let queryParams = [parseInt(dias)];
-
-        if (!isGeral) {
-            logsQuery += ` AND l.obraId = ?`;
-            queryParams.push(obraId);
+        // Compat: se vier `dias` (param antigo), monta janela rolante
+        if ((!startDate || !endDate) && dias) {
+            const end = new Date(); end.setHours(12, 0, 0, 0);
+            const start = new Date(end); start.setDate(end.getDate() - (parseInt(dias) - 1));
+            startDate = _fmtDate(start);
+            endDate = _fmtDate(end);
         }
-        logsQuery += ` GROUP BY data_log ORDER BY data_log ASC`;
-
-        const [logs] = await db.query(logsQuery, queryParams);
-
-        const chartData = [];
-        const today = new Date();
-        today.setHours(12, 0, 0, 0); 
-        
-        for (let i = parseInt(dias) - 1; i >= 0; i--) {
-            const d = new Date(today);
-            d.setDate(d.getDate() - i);
-            const dateStr = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-            
-            const logFound = logs.find(l => l.data_log === dateStr);
-            chartData.push({
-                date: dateStr,
-                horas_faturadas: logFound ? parseFloat(logFound.horas) : 0,
-                capacidade_alocada: capEmObra,
-                capacidade_disponivel: isGeral ? capDisponivel : 0,
-                capacidade_manutencao: capManutencao
-            });
+        if (!startDate || !endDate) {
+            return res.status(400).json({ error: 'startDate e endDate são obrigatórios.' });
+        }
+        if (startDate > endDate) {
+            return res.status(400).json({ error: 'startDate maior que endDate.' });
         }
 
-        let typeQuery = `
-            SELECT v.tipo, SUM(l.totalHours) as horas
-            FROM daily_work_logs l
-            JOIN vehicles v ON l.vehicleId = v.id
-            WHERE l.date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-        `;
-        let typeParams = [parseInt(dias)];
-        if (!isGeral) {
-            typeQuery += ` AND l.obraId = ?`;
-            typeParams.push(obraId);
-        }
-        typeQuery += ` GROUP BY v.tipo`;
+        const atual = await _computeAnalyticsCore(obraId, startDate, endDate);
 
-        const [typeLogs] = await db.query(typeQuery, typeParams);
+        // Período anterior de mesmo comprimento (para delta)
+        const dur = _diffDays(startDate, endDate);
+        const prevEnd = new Date(startDate + 'T12:00:00');
+        prevEnd.setDate(prevEnd.getDate() - 1);
+        const prevStart = new Date(prevEnd);
+        prevStart.setDate(prevStart.getDate() - (dur - 1));
+        const anterior = await _computeAnalyticsCore(obraId, _fmtDate(prevStart), _fmtDate(prevEnd));
 
-        typeLogs.forEach(t => {
-            const tipoStr = t.tipo || 'Outros';
-            if (frotaPorTipo[tipoStr]) {
-                frotaPorTipo[tipoStr].horas_executadas = parseFloat(t.horas) || 0;
-            } else {
-                frotaPorTipo[tipoStr] = { qtd: 0, cap: 0, horas_executadas: parseFloat(t.horas) || 0 };
-            }
-        });
-
-        const totalExecutado = chartData.reduce((acc, c) => acc + c.horas_faturadas, 0);
-        const mediaExecutada = totalExecutado / parseInt(dias);
-
-        res.json({
-            chartData,
-            summary: {
-                capEmObra,
-                capDisponivel: isGeral ? capDisponivel : 0,
-                capManutencao,
-                mediaExecutada: parseFloat(mediaExecutada.toFixed(1))
+        const comparativo = {
+            anterior: {
+                range: anterior.range,
+                horasExecutadas: anterior.summary.horasExecutadas,
+                aproveitamento: anterior.summary.aproveitamento,
+                horasPerdidasTotal: anterior.summary.horasPerdidasTotal,
             },
-            frotaPorTipo
-        });
+            delta: {
+                horasExecutadas: atual.summary.horasExecutadas - anterior.summary.horasExecutadas,
+                aproveitamento: atual.summary.aproveitamento - anterior.summary.aproveitamento,
+                horasPerdidasTotal: atual.summary.horasPerdidasTotal - anterior.summary.horasPerdidasTotal,
+            },
+        };
 
+        res.json({ ...atual, comparativo });
     } catch (error) {
         console.error("Erro no BI Supervisor:", error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// Drill-down: breakdown de uma data específica por máquina
+exports.getAnalyticsDayDetail = async (req, res) => {
+    try {
+        const { date, obraId } = req.query;
+        if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            return res.status(400).json({ error: 'date (YYYY-MM-DD) é obrigatório.' });
+        }
+        const isGeral = !obraId || obraId === 'geral';
+
+        const [vehicles] = await db.query(`
+            SELECT v.id, v.registroInterno, v.modelo, v.tipo, v.status, v.obraAtualId,
+                   (CASE
+                     WHEN v.status IN ('Em Manutenção', 'Aguardando Manutenção', 'Em Manutencao') THEN 'manutencao'
+                     WHEN v.status = 'Sucata' THEN 'sucata'
+                     ELSE 'ativo'
+                   END) as estado_calculado
+            FROM vehicles v
+            WHERE v.tipo NOT IN (${TIPOS_EXCLUIDOS_PRODUTIVOS.map(() => '?').join(',')})
+              AND (v.ativo IS NULL OR v.ativo != 0)
+              AND (v.isOutsourced IS NULL OR v.isOutsourced != 1)
+        `, TIPOS_EXCLUIDOS_PRODUTIVOS);
+
+        const scoped = vehicles.filter(v => {
+            if (v.estado_calculado === 'sucata') return false;
+            if (isGeral) return true;
+            return String(v.obraAtualId) === String(obraId);
+        });
+
+        // Logs do dia
+        let params = [date];
+        let condObra = '';
+        if (!isGeral) { condObra = ' AND l.obraId = ?'; params.push(obraId); }
+        const [logs] = await db.query(`
+            SELECT l.vehicleId, l.obraId, l.totalHours, o.nome as obraNome
+            FROM daily_work_logs l
+            LEFT JOIN obras o ON o.id = l.obraId
+            WHERE DATE(l.date) = ?${condObra}
+        `, params);
+        const logsMap = new Map(logs.map(r => [String(r.vehicleId), { horas: parseFloat(r.totalHours) || 0, obraNome: r.obraNome }]));
+
+        const isBusiness = _isBusinessDay(date);
+
+        const items = scoped.map(v => {
+            const log = logsMap.get(String(v.id));
+            let status;
+            if (!isBusiness) status = 'nao_util';
+            else if (v.estado_calculado === 'manutencao') status = 'manutencao';
+            else if (log && log.horas > 0) status = 'produziu';
+            else status = 'ocioso';
+            return {
+                id: v.id,
+                registroInterno: v.registroInterno,
+                modelo: v.modelo,
+                tipo: v.tipo,
+                obraNome: log?.obraNome || null,
+                horas: log?.horas || 0,
+                status,
+            };
+        });
+
+        const totais = items.reduce((acc, it) => {
+            acc[it.status] = (acc[it.status] || 0) + 1;
+            acc.horas += it.horas;
+            return acc;
+        }, { horas: 0 });
+
+        res.json({
+            date,
+            isBusinessDay: isBusiness,
+            totais,
+            items: items.sort((a, b) => {
+                const order = { produziu: 0, ocioso: 1, manutencao: 2, nao_util: 3 };
+                return (order[a.status] - order[b.status]) || (b.horas - a.horas);
+            }),
+        });
+    } catch (error) {
+        console.error("Erro no drill-down de dia:", error);
         res.status(500).json({ error: error.message });
     }
 };
