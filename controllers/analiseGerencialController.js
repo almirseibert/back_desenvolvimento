@@ -262,6 +262,147 @@ const justificar = async (req, res) => {
     }
 };
 
+// ── GET /api/analise-gerencial/jornadas/operador/:employeeId ─────────────────
+//
+// Relatório de jornadas por operador num período. Agrega o que já está
+// materializado em `analise_dia_maquina` cruzando com `daily_work_logs`
+// (porque o caminho com-lançamento grava employee_id = NULL na materializada).
+
+const sumIntervalsMin = (intervals) => {
+    if (!Array.isArray(intervals) || !intervals.length) return 0;
+    let ms = 0;
+    for (const iv of intervals) {
+        const ini = new Date(iv.inicio).getTime();
+        const fim = new Date(iv.fim).getTime();
+        if (fim > ini) ms += (fim - ini);
+    }
+    return Math.round(ms / 60000);
+};
+
+const jornadasOperador = async (req, res) => {
+    const { employeeId } = req.params;
+    const { startDate, endDate } = req.query;
+    if (!startDate || !endDate) {
+        return res.status(400).json({ error: 'startDate e endDate são obrigatórios.' });
+    }
+    try {
+        const [empRows] = await db.query(
+            'SELECT id, nome, funcao FROM employees WHERE id = ? LIMIT 1',
+            [employeeId]
+        );
+        if (!empRows.length) return res.status(404).json({ error: 'Operador não encontrado.' });
+        const operador = empRows[0];
+
+        const [linhas] = await db.query(
+            `SELECT a.id, a.data, a.vehicle_id, a.employee_id, a.obra_id,
+                    a.discrepancias_json, a.faturado_intervalos_json,
+                    a.rastreador_intervalos_json, a.ponto_intervalos_json,
+                    a.fontes_disponiveis_json, a.maior_magnitude_min,
+                    a.fonte_sinal, a.justificado_em, a.justificativa,
+                    v.placa, v.registroInterno, v.modelo,
+                    o.nome AS obra_nome,
+                    dwl.employeeId AS dwl_employee_id,
+                    dwl.morningStart, dwl.morningEnd,
+                    dwl.afternoonStart, dwl.afternoonEnd
+               FROM analise_dia_maquina a
+               LEFT JOIN vehicles v ON v.id = a.vehicle_id
+               LEFT JOIN obras    o ON o.id = a.obra_id
+               LEFT JOIN daily_work_logs dwl
+                      ON dwl.vehicleId = a.vehicle_id
+                     AND dwl.date = a.data
+                     AND dwl.employeeId = ?
+              WHERE a.data BETWEEN ? AND ?
+                AND (
+                    a.employee_id = ?
+                    OR a.vehicle_id IN (
+                        SELECT DISTINCT vehicleId FROM daily_work_logs
+                         WHERE employeeId = ? AND date BETWEEN ? AND ?
+                    )
+                )
+              ORDER BY a.data ASC, v.registroInterno ASC`,
+            [employeeId, startDate, endDate, employeeId, employeeId, startDate, endDate]
+        );
+
+        const totaisMin = { faturado: 0, rastreador: 0, ponto: 0 };
+        const fontesGlobais = { faturado: false, rastreador: false, ponto: false };
+        let totalDiscrepancias = 0;
+        let totalMagnitudeMin = 0;
+        const diasMap = new Map();
+
+        for (const r of linhas) {
+            const fat = parseJson(r.faturado_intervalos_json, []);
+            const ras = parseJson(r.rastreador_intervalos_json, []);
+            const pon = parseJson(r.ponto_intervalos_json, null);
+            const disc = parseJson(r.discrepancias_json, []);
+            const fontes = parseJson(r.fontes_disponiveis_json, {});
+
+            const minFat = sumIntervalsMin(fat);
+            const minRas = sumIntervalsMin(ras);
+            const minPon = pon ? sumIntervalsMin(pon) : 0;
+
+            totaisMin.faturado += minFat;
+            totaisMin.rastreador += minRas;
+            totaisMin.ponto += minPon;
+            if (fontes.faturado) fontesGlobais.faturado = true;
+            if (fontes.rastreador) fontesGlobais.rastreador = true;
+            if (fontes.ponto) fontesGlobais.ponto = true;
+            totalDiscrepancias += disc.length;
+            totalMagnitudeMin += disc.reduce((s, d) => s + (d.magnitude_min || 0), 0);
+
+            const dataStr = r.data instanceof Date
+                ? r.data.toISOString().slice(0, 10)
+                : String(r.data).slice(0, 10);
+            if (!diasMap.has(dataStr)) diasMap.set(dataStr, []);
+            diasMap.get(dataStr).push({
+                analiseId: r.id,
+                vehicleId: r.vehicle_id,
+                placa: r.placa,
+                registroInterno: r.registroInterno,
+                modelo: r.modelo,
+                obraId: r.obra_id,
+                obraNome: r.obra_nome,
+                faturadoIntervalos: fat,
+                rastreadorIntervalos: ras,
+                pontoIntervalos: pon,
+                totaisMin: { faturado: minFat, rastreador: minRas, ponto: minPon },
+                discrepancias: disc,
+                maiorMagnitudeMin: r.maior_magnitude_min,
+                fonteSinal: r.fonte_sinal,
+                fontesDisponiveis: fontes,
+                justificadoEm: r.justificado_em,
+                justificativa: r.justificativa,
+                // marca se esse veículo foi lançado pelo operador no dia (não só alocado)
+                lancadoPeloOperador: !!r.dwl_employee_id,
+                jornadaLancada: r.dwl_employee_id ? {
+                    morningStart: r.morningStart, morningEnd: r.morningEnd,
+                    afternoonStart: r.afternoonStart, afternoonEnd: r.afternoonEnd,
+                } : null,
+            });
+        }
+
+        const dias = [...diasMap.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([data, maquinas]) => ({ data, maquinas }));
+
+        res.json({
+            operador,
+            periodo: { startDate, endDate },
+            totaisMin,
+            fontesDisponiveis: fontesGlobais,
+            resumo: {
+                diasComAtividade: dias.length,
+                maquinasOperadas: new Set(linhas.map(r => r.vehicle_id)).size,
+                totalDiscrepancias,
+                totalMagnitudeMin,
+            },
+            dias,
+        });
+    } catch (e) {
+        console.error('Erro jornadasOperador:', e);
+        res.status(500).json({ error: 'Erro ao montar jornadas do operador.' });
+    }
+};
+
 // ── POST /api/analise-gerencial/discrepancias/reprocessar ────────────────────
 
 const reprocessar = async (req, res) => {
@@ -309,4 +450,5 @@ module.exports = {
     discrepanciaDrill,
     justificar,
     reprocessar,
+    jornadasOperador,
 };
