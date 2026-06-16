@@ -444,6 +444,170 @@ const reprocessar = async (req, res) => {
     }
 };
 
+// ── GET /api/analise-gerencial/projecao/:obraId ──────────────────────────────
+
+const getProjecaoObra = async (req, res) => {
+    const { obraId } = req.params;
+    try {
+        const [[obra]] = await db.query('SELECT * FROM obras WHERE id = ?', [obraId]);
+        if (!obra) return res.status(404).json({ error: 'Obra não encontrada.' });
+
+        const horasContratadasPorTipo = parseJson(obra.horasContratadasPorTipo, {});
+        const valoresPorTipo         = parseJson(obra.valoresPorTipo, {});
+        const horasContratadas = Object.values(horasContratadasPorTipo)
+            .reduce((a, b) => a + (parseFloat(b) || 0), 0);
+
+        // Logs diários: horas por (data, tipo de veículo)
+        const [logRows] = await db.query(`
+            SELECT DATE_FORMAT(l.date, '%Y-%m-%d') AS data_log,
+                   v.tipo                          AS tipo_veiculo,
+                   SUM(l.totalHours)               AS horas
+              FROM daily_work_logs l
+              LEFT JOIN vehicles v ON v.id = l.vehicleId
+             WHERE l.obraId = ?
+             GROUP BY data_log, tipo_veiculo
+             ORDER BY data_log ASC
+        `, [obraId]);
+
+        // Agrupa por data
+        const porData = {};
+        logRows.forEach(r => {
+            const d = r.data_log;
+            if (!porData[d]) porData[d] = [];
+            porData[d].push({ tipo: r.tipo_veiculo, horas: parseFloat(r.horas) || 0 });
+        });
+
+        const todasDatas = Object.keys(porData).sort();
+        const dataInicio = todasDatas[0] || null;
+
+        // Totais acumulados
+        let totalHoras = 0;
+        let totalFaturamentoRS = 0;
+        let temValores = false;
+        todasDatas.forEach(d => {
+            porData[d].forEach(e => {
+                totalHoras += e.horas;
+                const preco = parseFloat(valoresPorTipo[e.tipo] || valoresPorTipo[e.tipo?.trim()] || 0);
+                if (preco > 0) temValores = true;
+                totalFaturamentoRS += e.horas * preco;
+            });
+        });
+
+        // Quinzenas: janelas fixas de 15 dias a partir da data de início operacional
+        const quinzenas = [];
+        if (dataInicio) {
+            const today = new Date().toISOString().slice(0, 10);
+            let horasAcum = 0;
+            let faturAcum = 0;
+
+            for (let q = 0; q < 10; q++) {
+                const ini = new Date(dataInicio + 'T12:00:00');
+                ini.setDate(ini.getDate() + q * 15);
+                const fim = new Date(ini);
+                fim.setDate(fim.getDate() + 14);
+
+                const iniStr = ini.toISOString().slice(0, 10);
+                const fimStr = fim.toISOString().slice(0, 10);
+
+                if (iniStr > today) break;
+
+                const datasNaQ = todasDatas.filter(d => d >= iniStr && d <= fimStr);
+                let horasQ = 0;
+                let faturQ = 0;
+                datasNaQ.forEach(d => {
+                    porData[d].forEach(e => {
+                        horasQ += e.horas;
+                        const preco = parseFloat(valoresPorTipo[e.tipo] || 0);
+                        faturQ += e.horas * preco;
+                    });
+                });
+
+                horasAcum += horasQ;
+                faturAcum += faturQ;
+
+                const percentAcum  = horasContratadas > 0 ? (horasAcum  / horasContratadas) * 100 : 0;
+                const deltaPercent = horasContratadas > 0 ? (horasQ     / horasContratadas) * 100 : 0;
+
+                quinzenas.push({
+                    numero:            q + 1,
+                    dataInicio:        iniStr,
+                    dataFim:           fimStr,
+                    horasLancadas:     Math.round(horasQ  * 10) / 10,
+                    faturamentoRS:     Math.round(faturQ  * 100) / 100,
+                    percentualAcumulado: Math.round(percentAcum  * 10) / 10,
+                    deltaPercent:      Math.round(deltaPercent * 10) / 10,
+                    atingiuMeta:       deltaPercent >= 30,
+                    encerrada:         fimStr < today,
+                });
+
+                if (horasAcum >= horasContratadas) break;
+            }
+        }
+
+        // Ritmo e projeção de prazo
+        const diasComLancamento = todasDatas.length;
+        const ritmoHorasPorDia  = diasComLancamento > 0 ? totalHoras / diasComLancamento : 0;
+        const horasRestantes    = Math.max(0, horasContratadas - totalHoras);
+        const diasParaFinalizar = ritmoHorasPorDia > 0 ? Math.ceil(horasRestantes / ritmoHorasPorDia) : null;
+        const percentConcluido  = horasContratadas > 0 ? (totalHoras / horasContratadas) * 100 : 0;
+
+        // Custo de combustível (diesel) vinculado à obra
+        const [refuelRows] = await db.query(`
+            SELECT COALESCE(SUM(r.litrosLiberados), 0)              AS total_litros,
+                   COALESCE(SUM(r.litrosLiberados * r.pricePerLiter), 0) AS total_custo
+              FROM refuelings r
+             WHERE r.obraId = ?
+               AND r.litrosLiberados IS NOT NULL
+               AND r.pricePerLiter  IS NOT NULL
+        `, [obraId]);
+
+        const totalLitros       = parseFloat(refuelRows[0]?.total_litros  || 0);
+        const totalCustoCombust = parseFloat(refuelRows[0]?.total_custo   || 0);
+
+        // % combustível sobre faturamento já realizado
+        const percentCombust = totalFaturamentoRS > 0
+            ? (totalCustoCombust / totalFaturamentoRS) * 100
+            : 0;
+
+        // Projeção linear: se hoje X% está concluído e gastamos Y% em combustível,
+        // a 100% de conclusão a tendência é gastar Y/X * 100 em combustível.
+        const projecaoFinalPercent = percentConcluido > 1
+            ? (percentCombust / percentConcluido) * 100
+            : percentCombust;
+
+        res.json({
+            obra: {
+                id:               obra.id,
+                nome:             obra.nome,
+                contractType:     obra.contractType || 'horas',
+                horasContratadas,
+                temValoresPorTipo: temValores,
+                dataInicio,
+            },
+            faturamento: {
+                totalHorasFaturadas:  Math.round(totalHoras          * 10)  / 10,
+                totalRS:              Math.round(totalFaturamentoRS   * 100) / 100,
+                percentualConcluido:  Math.round(percentConcluido     * 10)  / 10,
+                ritmoHorasPorDia:     Math.round(ritmoHorasPorDia     * 10)  / 10,
+                diasParaFinalizar,
+                diasComLancamento,
+                quinzenas,
+            },
+            combustivel: {
+                totalLitros:           Math.round(totalLitros        * 10)  / 10,
+                totalCustoRS:          Math.round(totalCustoCombust  * 100) / 100,
+                percentualAtual:       Math.round(percentCombust     * 10)  / 10,
+                projecaoFinalPercent:  Math.round(projecaoFinalPercent * 10) / 10,
+                alertaCritico:         projecaoFinalPercent > 20,
+                semDados:              totalLitros === 0,
+            },
+        });
+    } catch (e) {
+        console.error('[projecaoObra]', e);
+        res.status(500).json({ error: 'Erro ao calcular projeção da obra.' });
+    }
+};
+
 module.exports = {
     obrasOverview,
     obraDetalhe,
@@ -451,4 +615,5 @@ module.exports = {
     justificar,
     reprocessar,
     jornadasOperador,
+    getProjecaoObra,
 };

@@ -20,5 +20,6 @@ router.get('/discrepancias/:id', ctrl.discrepanciaDrill);
 router.post('/discrepancias/:id/justificar', ctrl.justificar);
 router.post('/discrepancias/reprocessar', ctrl.reprocessar);
 router.get('/jornadas/operador/:employeeId', ctrl.jornadasOperador);
+router.get('/projecao/:obraId', ctrl.getProjecaoObra);
 
 module.exports = router;
