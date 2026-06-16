@@ -50,4 +50,40 @@ router.get('/me', authMiddleware, async (req, res) => {
     }
 });
 
+// --- Push tokens do app mobile (Seção 11) ---
+// Registra (upsert) o Expo push token do dispositivo para o usuário logado.
+router.post('/push-token', authMiddleware, async (req, res) => {
+    const userId = req.user?.id;
+    const { token, platform } = req.body || {};
+    if (!userId) return res.status(401).json({ error: 'Token inválido.' });
+    if (!token) return res.status(400).json({ error: 'token é obrigatório.' });
+
+    try {
+        // Token é único: reatribui ao usuário atual se o aparelho trocar de login.
+        await db.query(
+            `INSERT INTO user_push_tokens (user_id, token, platform)
+             VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), platform = VALUES(platform)`,
+            [userId, token, platform || null]
+        );
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('Erro ao registrar push token:', error);
+        res.status(500).json({ error: 'Erro interno.' });
+    }
+});
+
+// Remove o token (logout) para parar de receber pushes neste aparelho.
+router.delete('/push-token', authMiddleware, async (req, res) => {
+    const { token } = req.body || {};
+    if (!token) return res.status(400).json({ error: 'token é obrigatório.' });
+    try {
+        await db.query('DELETE FROM user_push_tokens WHERE token = ?', [token]);
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('Erro ao remover push token:', error);
+        res.status(500).json({ error: 'Erro interno.' });
+    }
+});
+
 module.exports = router;

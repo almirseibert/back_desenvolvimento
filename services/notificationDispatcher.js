@@ -13,6 +13,7 @@ const db = require('../database');
 const whatsappService = require('./whatsappService');
 const { sendEmail } = require('./emailService');
 const { renderBody } = require('./notificationEvents');
+const pushService = require('./pushService');
 
 const fmtDate = (d) => {
     if (!d) return '—';
@@ -183,6 +184,21 @@ const dispatch = async (eventType, payload = {}, opts = {}) => {
         }
 
         const { subject, body, anexoUrl } = await renderTemplate(eventType, payload);
+
+        // ─── Canal push (app mobile) ──────────────────────────────────────────
+        // Resolve targets user/role configurados com channel='push' em tokens e
+        // dispara via Expo. Fire-and-forget: não bloqueia whatsapp/email.
+        const pushTargets = targets.filter((t) => t.channel === 'push');
+        if (pushTargets.length) {
+            const userIds = pushTargets.filter((t) => t.target_type === 'user').map((t) => t.target_value);
+            const roles = pushTargets.filter((t) => t.target_type === 'role').map((t) => t.target_value);
+            const pushPayload = { title: subject, body, data: { eventType } };
+            Promise.all([
+                userIds.length ? pushService.pushToUsers(userIds, pushPayload) : null,
+                roles.length ? pushService.pushToRoles(roles, pushPayload) : null,
+            ]).catch((err) => console.warn(`[notif:${eventType}] push:`, err.message));
+        }
+
         const resolved = await resolveTargets(targets);
 
         // Deduplica por (channel + contact) para não enviar 2x ao mesmo destino
