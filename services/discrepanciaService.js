@@ -54,7 +54,9 @@ const serializeIntervals = (intervals) =>
 // Mesma lógica do confrontoService — copiada para não atrelar a mudanças futuras lá.
 const detectSignalSource = async (placa) => {
     const [rows] = await db.query(
-        'SELECT MAX(pos_ignicao) AS tem_ignicao FROM sigasul_positions WHERE pos_placa = ?',
+        `SELECT MAX(pos_ignicao) AS tem_ignicao FROM sigasul_positions
+         WHERE REPLACE(REPLACE(UPPER(pos_placa),'-',''),' ','')
+             = REPLACE(REPLACE(UPPER(?),'-',''),' ','')`,
         [placa]
     );
     return rows[0] && rows[0].tem_ignicao ? 'ignicao' : 'velocidade';
@@ -112,16 +114,21 @@ const processPlacaDay = async (placa, dateStr) => {
 
     const fonte = await detectSignalSource(placa);
     const activityFilter = fonte === 'ignicao' ? 'pos_ignicao = 1' : 'pos_velocidade > 0';
+    // Normaliza a placa na comparação para suportar formatos com/sem traço ou espaço,
+    // evitando que veículos com placa "ABC-1234" em vehicles e "ABC1234" em sigasul
+    // sejam tratados como entidades distintas no processRange (bug: segunda chamada
+    // sobrescrevia rastreador_intervalos_json com array vazio via ON DUPLICATE KEY UPDATE).
+    const placaNorm = `REPLACE(REPLACE(UPPER(pos_placa),'-',''),' ','') = REPLACE(REPLACE(UPPER(?),'-',''),' ','')`;
     const [posRows] = await db.query(
         `SELECT pos_data_hora_receb FROM sigasul_positions
-         WHERE pos_placa = ? AND DATE(pos_data_hora_receb) = ? AND ${activityFilter}
+         WHERE ${placaNorm} AND DATE(pos_data_hora_receb) = ? AND ${activityFilter}
          ORDER BY pos_data_hora_receb`,
         [placa, dateStr]
     );
     const trackerIntervals = pointsToIntervals(posRows.map(r => toMs(r.pos_data_hora_receb)));
     const [allPosCount] = await db.query(
         `SELECT COUNT(*) AS c FROM sigasul_positions
-         WHERE pos_placa = ? AND DATE(pos_data_hora_receb) = ?`,
+         WHERE ${placaNorm} AND DATE(pos_data_hora_receb) = ?`,
         [placa, dateStr]
     );
     const hasTrackerData = allPosCount[0].c > 0;
@@ -233,15 +240,28 @@ const processPlacaDay = async (placa, dateStr) => {
 };
 
 const processRange = async (startDate, endDate, { onProgress } = {}) => {
+    // Agrupa por (vehicle_id, data) para evitar pares duplicados quando o formato
+    // da placa difere entre sigasul_positions (ex: "ABC1234") e vehicles (ex: "ABC-1234").
+    // Usa vehicles.placa como placa canônica para que processPlacaDay possa resolver
+    // o vehicleId corretamente; a query interna do sigasul usa comparação normalizada.
     const [pairs] = await db.query(
-        `SELECT DISTINCT pos_placa AS placa, DATE(pos_data_hora_receb) AS data
-           FROM sigasul_positions
-          WHERE DATE(pos_data_hora_receb) BETWEEN ? AND ?
-         UNION
-         SELECT DISTINCT v.placa AS placa, l.date AS data
-           FROM daily_work_logs l
-           JOIN vehicles v ON v.id = l.vehicleId
-          WHERE l.date BETWEEN ? AND ? AND v.placa IS NOT NULL`,
+        `SELECT v.placa, dates.data
+           FROM (
+             SELECT DISTINCT
+               (SELECT id FROM vehicles
+                 WHERE REPLACE(REPLACE(UPPER(placa),'-',''),' ','')
+                     = REPLACE(REPLACE(UPPER(sp.pos_placa),'-',''),' ','')
+                 LIMIT 1) AS vehicle_id,
+               DATE(sp.pos_data_hora_receb) AS data
+               FROM sigasul_positions sp
+              WHERE DATE(sp.pos_data_hora_receb) BETWEEN ? AND ?
+             UNION
+             SELECT DISTINCT vehicleId AS vehicle_id, date AS data
+               FROM daily_work_logs
+              WHERE date BETWEEN ? AND ?
+           ) dates
+           JOIN vehicles v ON v.id = dates.vehicle_id
+          WHERE dates.vehicle_id IS NOT NULL AND v.placa IS NOT NULL`,
         [startDate, endDate, startDate, endDate]
     );
 
