@@ -500,7 +500,14 @@ const getProjecaoObra = async (req, res) => {
             let horasAcum = 0;
             let faturAcum = 0;
 
-            for (let q = 0; q < 10; q++) {
+            const inicioMs = new Date(dataInicio + 'T12:00:00').getTime();
+            const hojeMs   = new Date(today + 'T12:00:00').getTime();
+            const maxQuinzenas = Math.min(
+                60,
+                Math.max(1, Math.floor((hojeMs - inicioMs) / (15 * 24 * 60 * 60 * 1000)) + 1)
+            );
+
+            for (let q = 0; q < maxQuinzenas; q++) {
                 const ini = new Date(dataInicio + 'T12:00:00');
                 ini.setDate(ini.getDate() + q * 15);
                 const fim = new Date(ini);
@@ -538,9 +545,8 @@ const getProjecaoObra = async (req, res) => {
                     deltaPercent:      Math.round(deltaPercent * 10) / 10,
                     atingiuMeta:       deltaPercent >= 30,
                     encerrada:         fimStr < today,
+                    excedeuContratado: horasContratadas > 0 && horasAcum > horasContratadas,
                 });
-
-                if (horasAcum >= horasContratadas) break;
             }
         }
 
