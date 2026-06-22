@@ -155,7 +155,7 @@ exports.getObraDetails = async (req, res) => {
 
         const [recentActivity] = await db.query(`
             SELECT date, SUM(totalHours) as total_dia
-            FROM daily_work_logs 
+            FROM daily_work_logs
             WHERE obraId = ? AND date >= DATE_SUB(CURDATE(), INTERVAL 15 DAY)
             GROUP BY date ORDER BY date ASC
         `, [id]);
@@ -217,10 +217,101 @@ exports.getObraDetails = async (req, res) => {
 
         const [totalHoursRes] = await db.query('SELECT SUM(totalHours) as total FROM daily_work_logs WHERE obraId = ?', [id]);
         const horasExecutadas = parseFloat(totalHoursRes[0]?.total) || 0;
-        
+
         const percExecucaoFisica = contract.total_hours_contracted > 0 ? (horasExecutadas / contract.total_hours_contracted) : 0;
         const valorProduzidoEstimado = percExecucaoFisica * contract.total_value;
         const valorPendenteFaturamento = Math.max(0, valorProduzidoEstimado - totalDespesas);
+
+        // Evolução por quinzena (últimas 6) — horas faturadas e % acumulada sobre o contrato.
+        // Janelas fixas de 15 dias ancoradas em contract.start_date (mesma régua do getProjecaoObra,
+        // para o Diretor ver os mesmos períodos nas duas telas).
+        const quinzenas = [];
+        try {
+            const [allLogs] = await db.query(`
+                SELECT DATE_FORMAT(date, '%Y-%m-%d') AS data_log,
+                       SUM(totalHours)               AS horas,
+                       vehicleId
+                  FROM daily_work_logs
+                 WHERE obraId = ?
+                 GROUP BY data_log, vehicleId
+                 ORDER BY data_log ASC
+            `, [id]);
+
+            const horasPorData = {};
+            const veiculosPorData = {};
+            allLogs.forEach(r => {
+                const h = parseFloat(r.horas) || 0;
+                horasPorData[r.data_log] = (horasPorData[r.data_log] || 0) + h;
+                if (r.vehicleId && h > 0) {
+                    if (!veiculosPorData[r.data_log]) veiculosPorData[r.data_log] = new Set();
+                    veiculosPorData[r.data_log].add(r.vehicleId);
+                }
+            });
+            const datasOrdenadas = Object.keys(horasPorData);
+
+            // Denominador: máquinas atualmente alocadas na obra (proxy — não considera realocações históricas)
+            const [maqRows] = await db.query(
+                'SELECT COUNT(*) AS total FROM vehicles WHERE obraAtualId = ?',
+                [id]
+            );
+            const totalMaquinasAlocadas = parseInt(maqRows[0]?.total, 10) || 0;
+
+            // Âncora: contract.start_date se houver, senão primeira data com lançamento.
+            let ancora = null;
+            if (contract.start_date) {
+                ancora = new Date(contract.start_date).toISOString().slice(0, 10);
+            } else if (datasOrdenadas.length) {
+                ancora = datasOrdenadas[0];
+            }
+
+            if (ancora) {
+                const horasContratadas = parseFloat(contract.total_hours_contracted) || 0;
+                const today = new Date().toISOString().slice(0, 10);
+                const todasQuinzenas = [];
+                let horasAcum = 0;
+
+                for (let q = 0; q < 200; q++) {
+                    const ini = new Date(ancora + 'T12:00:00');
+                    ini.setDate(ini.getDate() + q * 15);
+                    const fim = new Date(ini);
+                    fim.setDate(fim.getDate() + 14);
+
+                    const iniStr = ini.toISOString().slice(0, 10);
+                    const fimStr = fim.toISOString().slice(0, 10);
+                    if (iniStr > today) break;
+
+                    const datasNaQ = datasOrdenadas.filter(d => d >= iniStr && d <= fimStr);
+                    const horasQ = datasNaQ.reduce((acc, d) => acc + horasPorData[d], 0);
+                    const veicSet = new Set();
+                    datasNaQ.forEach(d => {
+                        (veiculosPorData[d] || []).forEach(v => veicSet.add(v));
+                    });
+
+                    horasAcum += horasQ;
+
+                    todasQuinzenas.push({
+                        numero: q + 1,
+                        dataInicio: iniStr,
+                        dataFim: fimStr,
+                        horasLancadas: Math.round(horasQ * 10) / 10,
+                        maquinasFaturando: veicSet.size,
+                        maquinasAlocadas: totalMaquinasAlocadas,
+                        percentualAcumulado: horasContratadas > 0
+                            ? Math.round((horasAcum / horasContratadas) * 1000) / 10
+                            : null,
+                        deltaPercent: horasContratadas > 0
+                            ? Math.round((horasQ / horasContratadas) * 1000) / 10
+                            : null,
+                        encerrada: fimStr < today,
+                    });
+                }
+
+                // Últimas 4 (mais recentes ao final do array)
+                quinzenas.push(...todasQuinzenas.slice(-4));
+            }
+        } catch (qErr) {
+            console.error('Erro ao calcular quinzenas:', qErr);
+        }
 
         res.json({
             obra,
@@ -235,7 +326,8 @@ exports.getObraDetails = async (req, res) => {
             producao: {
                 media_diaria_atual: mediaDiariaObra,
                 saldo_horas: contract.total_hours_contracted - horasExecutadas,
-                horas_executadas: horasExecutadas
+                horas_executadas: horasExecutadas,
+                quinzenas
             },
             veiculos: machinePredictions,
             crm_history: crmHistory
