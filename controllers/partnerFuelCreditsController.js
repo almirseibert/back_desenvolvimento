@@ -173,10 +173,62 @@ const createAdjustment = async (req, res) => {
     }
 };
 
+// Corrige o valor/descrição de um lançamento de crédito (digitação errada).
+// Só permite em entry_type = 'credit' para não destruir trilha de empenho/baixa.
+const updateCreditEntry = async (req, res) => {
+    const { entryId } = req.params;
+    const { amount, description } = req.body;
+    const value = Number(amount);
+    if (!Number.isFinite(value) || value <= 0) {
+        return res.status(400).json({ error: 'amount (>0) é obrigatório.' });
+    }
+    try {
+        const [[entry]] = await db.execute(
+            'SELECT id, entry_type FROM partner_fuel_credit_entries WHERE id = ?',
+            [entryId]
+        );
+        if (!entry) return res.status(404).json({ error: 'Lançamento não encontrado.' });
+        if (entry.entry_type !== 'credit') {
+            return res.status(400).json({ error: 'Apenas lançamentos de crédito podem ser corrigidos.' });
+        }
+        await db.execute(
+            'UPDATE partner_fuel_credit_entries SET amount = ?, description = ? WHERE id = ?',
+            [value, description || 'Crédito lançado', entryId]
+        );
+        if (req.io) req.io.emit('server:sync', { targets: ['partner_fuel_credits'] });
+        res.json({ message: 'Crédito atualizado.' });
+    } catch (error) {
+        console.error('❌ [partnerFuelCredits] updateCreditEntry:', error);
+        res.status(500).json({ error: 'Falha ao atualizar crédito.' });
+    }
+};
+
+const deleteCreditEntry = async (req, res) => {
+    const { entryId } = req.params;
+    try {
+        const [[entry]] = await db.execute(
+            'SELECT id, entry_type FROM partner_fuel_credit_entries WHERE id = ?',
+            [entryId]
+        );
+        if (!entry) return res.status(404).json({ error: 'Lançamento não encontrado.' });
+        if (entry.entry_type !== 'credit') {
+            return res.status(400).json({ error: 'Apenas lançamentos de crédito podem ser removidos.' });
+        }
+        await db.execute('DELETE FROM partner_fuel_credit_entries WHERE id = ?', [entryId]);
+        if (req.io) req.io.emit('server:sync', { targets: ['partner_fuel_credits'] });
+        res.json({ message: 'Crédito removido.' });
+    } catch (error) {
+        console.error('❌ [partnerFuelCredits] deleteCreditEntry:', error);
+        res.status(500).json({ error: 'Falha ao remover crédito.' });
+    }
+};
+
 module.exports = {
     listBalances,
     getPartnerDetail,
     getEntries,
     createCredit,
     createAdjustment,
+    updateCreditEntry,
+    deleteCreditEntry,
 };

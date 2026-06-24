@@ -11,5 +11,7 @@ router.get('/:partnerId', ctrl.getPartnerDetail);
 router.get('/:partnerId/entries', ctrl.getEntries);
 router.post('/', ctrl.createCredit);
 router.post('/:partnerId/adjustment', ctrl.createAdjustment);
+router.put('/entries/:entryId', ctrl.updateCreditEntry);
+router.delete('/entries/:entryId', ctrl.deleteCreditEntry);
 
 module.exports = router;
