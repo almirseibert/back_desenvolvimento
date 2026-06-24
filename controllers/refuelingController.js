@@ -5,6 +5,7 @@ const { updateVehicleReading } = require('../utils/updateVehicleReading');
 const { recalcFuelAverage } = require('../utils/recalcFuelAverage');
 const { vehicleGroups } = require('../utils/vehicleRules');
 const { notifyComboioEntrada } = require('../services/orderNotifier');
+const fuelCredits = require('../utils/partnerFuelCredits');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
@@ -572,8 +573,28 @@ const createRefuelingOrder = async (req, res) => {
             await updateMonthlyExpense(connection, refuelingData.obraId, refuelingData.partnerId, refuelingData.fuelType, refuelingData.data);
         }
 
+        // Saldo pré-pago: empenhar valor da ordem ao criar (apenas se ordem efetivamente liberada).
+        if (initialStatus === 'Aberta' || initialStatus === 'Concluída') {
+            try {
+                await fuelCredits.applyOrderReservation(connection, {
+                    id,
+                    authNumber: newAuthNumber,
+                    partnerId: refuelingData.partnerId,
+                    obraId: refuelingData.obraId,
+                    fuelType: refuelingData.fuelType,
+                    isFillUp: refuelingData.isFillUp,
+                    needsArla: refuelingData.needsArla,
+                    litrosLiberados: refuelingData.litrosLiberados,
+                    litrosLiberadosArla: refuelingData.litrosLiberadosArla,
+                    outrosValor: refuelingData.outrosValor,
+                }, { createdBy: req.user?.id || null });
+            } catch (e) {
+                console.warn('[partnerFuelCredits] applyOrderReservation falhou:', e.message);
+            }
+        }
+
         await connection.commit();
-        req.io.emit('server:sync', { targets: ['refuelings', 'vehicles', 'expenses', 'solicitacoes'] });
+        req.io.emit('server:sync', { targets: ['refuelings', 'vehicles', 'expenses', 'solicitacoes', 'partner_fuel_credits'] });
 
         // Ordem salva bloqueada (leitura ou orçamento) → alerta admins (pop-up + som).
         if (motivoLeitura || bloqueadoOrcamento) {
@@ -705,8 +726,39 @@ const updateRefuelingOrder = async (req, res) => {
             }
         }
 
+        // Saldo pré-pago: se a ordem ainda está em aberto e algum campo de valor
+        // mudou, libera o empenho antigo e refaz com base nos valores atuais.
+        try {
+            const merged = {
+                ...oldRefueling,
+                ...updateData,
+                id,
+                isFillUp: updateData.isFillUp !== undefined ? updateData.isFillUp : oldRefueling.isFillUp,
+            };
+            const isOpen = ['Aberta', 'BloqueadoOrcamento', 'BloqueadoLeitura'].includes(merged.status);
+            const volumeOrPriceChanged =
+                updateData.litrosLiberados !== undefined ||
+                updateData.litrosLiberadosArla !== undefined ||
+                updateData.outrosValor !== undefined ||
+                updateData.partnerId !== undefined ||
+                updateData.fuelType !== undefined;
+            if (isOpen && volumeOrPriceChanged) {
+                await fuelCredits.releaseOrderReservation(connection, oldRefueling, {
+                    createdBy: req.user?.id || null,
+                    reason: 'Edição',
+                });
+                if (merged.status === 'Aberta') {
+                    await fuelCredits.applyOrderReservation(connection, merged, {
+                        createdBy: req.user?.id || null,
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn('[partnerFuelCredits] re-empenho na edição falhou:', e.message);
+        }
+
         await connection.commit();
-        req.io.emit('server:sync', { targets: ['refuelings', 'expenses', 'vehicles'] });
+        req.io.emit('server:sync', { targets: ['refuelings', 'expenses', 'vehicles', 'partner_fuel_credits'] });
         res.json({ message: 'Ordem atualizada.' });
     } catch (error) {
         await connection.rollback();
@@ -818,6 +870,28 @@ const confirmRefuelingOrder = async (req, res) => {
             await updateMonthlyExpense(connection, order.obraId, order.partnerId, order.fuelType, order.data);
         }
 
+        // Saldo pré-pago: libera empenho (se havia) e lança baixa definitiva com valor real.
+        try {
+            await fuelCredits.releaseOrderReservation(connection, order, {
+                createdBy: req.user?.id || null,
+                reason: 'Baixa',
+            });
+            await fuelCredits.settleOrder(connection, {
+                id: order.id,
+                authNumber: order.authNumber,
+                partnerId: order.partnerId,
+                obraId: order.obraId,
+                litrosAbastecidos: orderUpdate.litrosAbastecidos,
+                litrosAbastecidosArla: orderUpdate.litrosAbastecidosArla,
+                pricePerLiter: orderUpdate.pricePerLiter,
+                pricePerLiterArla: orderUpdate.pricePerLiterArla,
+                outrosValor: orderUpdate.outrosValor,
+            }, { createdBy: req.user?.id || null });
+            await connection.execute('UPDATE refuelings SET is_full_tank = 0 WHERE id = ?', [id]);
+        } catch (e) {
+            console.warn('[partnerFuelCredits] settle/release na baixa falhou:', e.message);
+        }
+
         // Recalcula médias de consumo após confirmar abastecimento
         try {
             await recalcFuelAverage(connection, order.vehicleId);
@@ -826,7 +900,7 @@ const confirmRefuelingOrder = async (req, res) => {
         }
 
         await connection.commit();
-        req.io.emit('server:sync', { targets: ['refuelings', 'vehicles', 'expenses', 'partners', 'solicitacoes'] });
+        req.io.emit('server:sync', { targets: ['refuelings', 'vehicles', 'expenses', 'partners', 'solicitacoes', 'partner_fuel_credits'] });
         res.json({ message: 'Abastecimento confirmado com sucesso.' });
 
     } catch (error) {
@@ -851,6 +925,31 @@ const deleteRefuelingOrder = async (req, res) => {
         }
         const ref = rows[0];
 
+        // Saldo pré-pago: estorna empenho ou baixa antes de excluir a ordem.
+        try {
+            if (ref.status === 'Concluída' || ref.status === 'Concluida') {
+                const settled = fuelCredits.computeSettlementAmount(ref);
+                if (settled > 0 && ref.partnerId) {
+                    await fuelCredits.insertEntry(connection, {
+                        partnerId: ref.partnerId,
+                        entryType: 'adjustment',
+                        amount: settled, // positivo: devolve ao disponível
+                        orderId: ref.id,
+                        obraId: ref.obraId,
+                        description: `Estorno exclusão ordem #${ref.authNumber || ''}`.trim(),
+                        createdBy: req.user?.id || null,
+                    });
+                }
+            } else {
+                await fuelCredits.releaseOrderReservation(connection, ref, {
+                    createdBy: req.user?.id || null,
+                    reason: 'Exclusão',
+                });
+            }
+        } catch (e) {
+            console.warn('[partnerFuelCredits] release na exclusão falhou:', e.message);
+        }
+
         await connection.execute('DELETE FROM refuelings WHERE id = ?', [id]);
 
         let linkedSolicitacaoId = null;
@@ -874,7 +973,7 @@ const deleteRefuelingOrder = async (req, res) => {
         }
 
         await connection.commit();
-        req.io.emit('server:sync', { targets: ['refuelings', 'expenses', 'solicitacoes'] });
+        req.io.emit('server:sync', { targets: ['refuelings', 'expenses', 'solicitacoes', 'partner_fuel_credits'] });
         res.status(204).end();
     } catch (error) {
         await connection.rollback();
@@ -905,23 +1004,41 @@ const negarOrdemBloqueada = async (req, res) => {
 const liberarOrdemBloqueada = async (req, res) => {
     const { id } = req.params;
     const liberadoPor = req.body.liberadoPor || req.user || null;
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
     try {
-        const [[ordem]] = await db.execute('SELECT id, status FROM refuelings WHERE id = ?', [id]);
-        if (!ordem) return res.status(404).json({ error: 'Ordem não encontrada.' });
+        const [[ordem]] = await connection.execute('SELECT * FROM refuelings WHERE id = ? FOR UPDATE', [id]);
+        if (!ordem) {
+            await connection.rollback();
+            return res.status(404).json({ error: 'Ordem não encontrada.' });
+        }
         if (!['BloqueadoOrcamento', 'BloqueadoLeitura'].includes(ordem.status)) {
+            await connection.rollback();
             return res.status(400).json({ error: 'Ordem não está bloqueada.' });
         }
-        await db.execute(
+        await connection.execute(
             'UPDATE refuelings SET status = "Aberta", editedBy = ? WHERE id = ?',
             [JSON.stringify({ acao: 'liberacao_orcamento', por: liberadoPor }), id]
         );
-        req.io.emit('server:sync', { targets: ['refuelings'] });
+
+        // Saldo pré-pago: agora a ordem efetivamente sai — empenha valor.
+        try {
+            await fuelCredits.applyOrderReservation(connection, ordem, { createdBy: req.user?.id || null });
+        } catch (e) {
+            console.warn('[partnerFuelCredits] applyOrderReservation (liberar) falhou:', e.message);
+        }
+
+        await connection.commit();
+        req.io.emit('server:sync', { targets: ['refuelings', 'partner_fuel_credits'] });
         // Após o admin liberar, a ordem agora vai ao posto — dispara envio automático
         dispatchOrderToPartner(id);
         res.json({ message: 'Ordem liberada com sucesso.' });
     } catch (error) {
+        await connection.rollback();
         console.error('Erro ao liberar ordem:', error);
         res.status(500).json({ error: 'Erro ao liberar ordem.' });
+    } finally {
+        connection.release();
     }
 };
 

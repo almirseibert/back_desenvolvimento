@@ -48,6 +48,13 @@ const http = require('http');
         // Campo KM/Hr atual no modal de OS/OC
         { table: 'orders',                 column: 'kmHrAtual',                        def: 'DECIMAL(12,1) DEFAULT NULL' },
         { table: 'orders',                 column: 'kmHrUnit',                         def: "VARCHAR(10) DEFAULT NULL" },
+        // ── Saldo pré-pago em postos (controle de crédito por parceiro) ──
+        // reserved_amount: valor empenhado quando a ordem foi criada (NULL em ordens antigas / fill-up sem valor)
+        // reserved_price: preço usado no empenho (auditoria)
+        // is_full_tank: ordem "encher tanque" — empenho fica em aberto até a baixa com o valor real
+        { table: 'refuelings',             column: 'reserved_amount',                  def: 'DECIMAL(12,2) DEFAULT NULL' },
+        { table: 'refuelings',             column: 'reserved_price',                   def: 'DECIMAL(8,3) DEFAULT NULL' },
+        { table: 'refuelings',             column: 'is_full_tank',                     def: 'TINYINT(1) DEFAULT 0' },
     ];
 
     for (const { table, column, def } of migrations) {
@@ -617,6 +624,74 @@ const http = require('http');
     }
 })();
 
+// ====================================================================
+// MIGRAÇÃO — Saldo pré-pago em postos (partner_fuel_credit_entries + VIEW)
+// ====================================================================
+// Modelo append-only: cada movimentação (crédito, empenho, liberação de
+// empenho, baixa, ajuste) entra como uma linha. O saldo disponível por
+// posto é uma VIEW que soma os tipos com o sinal correto.
+//
+// Convenção de sinal (somente entry_type='adjustment' usa amount com sinal):
+//   credit              → +amount   (entra dinheiro)
+//   reservation         → -amount   (empenho ao criar ordem)
+//   reservation_release → +amount   (libera empenho ao cancelar/editar/baixar)
+//   settlement          → -amount   (baixa definitiva da ordem)
+//   adjustment          → amount com sinal (estorno manual)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS partner_fuel_credit_entries (
+                id          BIGINT       AUTO_INCREMENT PRIMARY KEY,
+                partner_id  VARCHAR(36)  NOT NULL,
+                entry_type  ENUM('credit','reservation','reservation_release','settlement','adjustment') NOT NULL,
+                amount      DECIMAL(12,2) NOT NULL,
+                order_id    VARCHAR(36)  DEFAULT NULL,
+                obra_id     VARCHAR(36)  DEFAULT NULL,
+                description VARCHAR(255) DEFAULT NULL,
+                created_by  VARCHAR(64)  DEFAULT NULL,
+                created_at  DATETIME     DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_partner_created (partner_id, created_at),
+                INDEX idx_order (order_id),
+                INDEX idx_type (entry_type)
+            )
+        `);
+
+        await db.query(`
+            CREATE OR REPLACE VIEW v_partner_fuel_balance AS
+            SELECT
+                partner_id,
+                COALESCE(SUM(CASE WHEN entry_type='credit'              THEN amount ELSE 0 END), 0) AS total_credited,
+                COALESCE(SUM(CASE WHEN entry_type='reservation'         THEN amount ELSE 0 END), 0)
+              - COALESCE(SUM(CASE WHEN entry_type='reservation_release' THEN amount ELSE 0 END), 0) AS total_reserved,
+                COALESCE(SUM(CASE WHEN entry_type='settlement'          THEN amount ELSE 0 END), 0) AS total_settled,
+                COALESCE(SUM(CASE WHEN entry_type='adjustment'          THEN amount ELSE 0 END), 0) AS total_adjustment,
+                (
+                    COALESCE(SUM(CASE WHEN entry_type='credit'              THEN amount ELSE 0 END), 0)
+                  - (
+                        COALESCE(SUM(CASE WHEN entry_type='reservation'         THEN amount ELSE 0 END), 0)
+                      - COALESCE(SUM(CASE WHEN entry_type='reservation_release' THEN amount ELSE 0 END), 0)
+                    )
+                  - COALESCE(SUM(CASE WHEN entry_type='settlement'          THEN amount ELSE 0 END), 0)
+                  + COALESCE(SUM(CASE WHEN entry_type='adjustment'          THEN amount ELSE 0 END), 0)
+                ) AS available
+            FROM partner_fuel_credit_entries
+            GROUP BY partner_id
+        `);
+        // Se a tabela já existia com created_by INT (versão inicial), converte.
+        try {
+            await db.query('ALTER TABLE partner_fuel_credit_entries MODIFY COLUMN created_by VARCHAR(64) DEFAULT NULL');
+        } catch (e) { /* ignora se já estiver correto */ }
+
+        // Recria a VIEW sempre (CREATE OR REPLACE) — se a tabela já existia,
+        // o CREATE TABLE IF NOT EXISTS acima não fez nada, mas precisamos
+        // garantir que a view esteja atualizada.
+        console.log('✅ Migração partner_fuel_credit_entries + v_partner_fuel_balance concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] partner_fuel_credit_entries:', e.message);
+    }
+})();
+
 const { Server } = require("socket.io");
 const multer = require('multer');
 
@@ -782,6 +857,7 @@ const whatsappRoutes = require('./routes/whatsappRoutes');
 const sigasulRoutes = require('./routes/sigasulRoutes');
 const vehicleTypeConfigRoutes = require('./routes/vehicleTypeConfigRoutes');
 const vehicleTaxonomyRoutes = require('./routes/vehicleTaxonomyRoutes');
+const partnerFuelCreditsRoutes = require('./routes/partnerFuelCreditsRoutes');
 
 // ====================================================================
 // CONFIGURAÇÃO DO HTTP SERVER E SOCKET.IO
@@ -899,6 +975,7 @@ apiRouter.use('/whatsapp', whatsappRoutes);
 apiRouter.use('/sigasul', sigasulRoutes);
 apiRouter.use('/vehicle-type-configs', vehicleTypeConfigRoutes);
 apiRouter.use('/vehicle-taxonomy', vehicleTaxonomyRoutes);
+apiRouter.use('/partnerFuelCredits', partnerFuelCreditsRoutes);
 
 // ─── WEBHOOK PÚBLICO DO CHATBOT ─────────────────────────────────────────────
 // Deve ficar ANTES de app.use('/api', apiRouter) para não passar pelo authMiddleware
