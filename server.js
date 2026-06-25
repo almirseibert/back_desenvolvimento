@@ -96,6 +96,19 @@ const http = require('http');
         console.warn('[migration] partners.tipo_parceiro ENUM:', e.message);
     }
 
+    // ───── Normalizar whatsapp_chatbot_sessions.step para VARCHAR(30) ─────
+    // Causa do erro: "Data truncated for column 'step' at row 1" ao avançar
+    // para 'posto'/'leitura' etc. — em produção a coluna foi criada como ENUM
+    // antigo (sem todos os steps) ou VARCHAR curto. Migração idempotente.
+    try {
+        await db.query(`
+            ALTER TABLE \`whatsapp_chatbot_sessions\`
+            MODIFY COLUMN \`step\` VARCHAR(30) NOT NULL DEFAULT 'veiculo'
+        `);
+    } catch (e) {
+        console.warn('[migration] whatsapp_chatbot_sessions.step:', e.message);
+    }
+
     // ───── Seed de funcionários "placeholder" conhecidos ─────
     // Marca como isPlaceholder=1 funcionários cujo nome bate com os usados
     // historicamente como operador temporário ao alocar veículo a uma obra.

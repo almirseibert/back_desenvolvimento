@@ -190,6 +190,23 @@ async function buscarVeiculoFuncionario(employeeId) {
     return obraRows.length ? obraRows[0] : null;
 }
 
+// Busca veículos ativos nas obras onde o funcionário está alocado (exclui o "principal")
+async function buscarVeiculosDaObraDoFuncionario(employeeId, excluirVeiculoId = null) {
+    const [rows] = await db.query(
+        `SELECT DISTINCT v.id, v.placa, v.registroInterno, v.modelo, v.tipo
+         FROM obras_historico_veiculos h_func
+         INNER JOIN obras_historico_veiculos h_vei ON h_vei.obraId = h_func.obraId AND h_vei.dataSaida IS NULL
+         INNER JOIN vehicles v ON h_vei.veiculoId = v.id
+         WHERE h_func.employeeId = ? AND h_func.dataSaida IS NULL
+           AND v.status IN ('Ativo', 'Disponível', 'Em Obra')
+         ORDER BY v.placa
+         LIMIT 15`,
+        [String(employeeId)]
+    );
+    if (!excluirVeiculoId) return rows;
+    return rows.filter(v => String(v.id) !== String(excluirVeiculoId));
+}
+
 // item 3: normaliza o RE armazenado da mesma forma que o input
 function matchVeiculoDireto(input, veiculos) {
     const limpo = input.trim().toUpperCase().replace(/[\s\-.]/g, '');
@@ -422,16 +439,7 @@ async function criarSolicitacaoDB(session) {
 
 // ─── VEHICLE LIST (item 4: query única com LIMIT 25 usada em exibição e match) ─
 
-async function buscarVeiculosAtivos() {
-    const [veiculos] = await db.query(
-        `SELECT id, placa, registroInterno, modelo, tipo
-         FROM vehicles WHERE status IN ('Ativo', 'Disponível', 'Em Obra')
-         ORDER BY placa LIMIT 25`
-    );
-    return veiculos;
-}
-
-// Busca direta por placa ou RE/frota sem depender do LIMIT 25
+// Busca direta por placa ou RE/frota
 async function buscarVeiculoPorPlacaOuRE(input) {
     const limpo = input.trim().toUpperCase().replace(/[\s\-.]/g, '');
     const semRE = input.trim().replace(/^RE\s*/i, '').replace(/[\s\-.]/g, '').toUpperCase();
@@ -455,6 +463,7 @@ async function buscarVeiculoPorPlacaOuRE(input) {
 async function exibirMenuVeiculo(session, from) {
     const vSugerido = session.session_data?.veiculo_sugerido;
     const ultima    = session.session_data?._ultima;
+    const employeeId = session.session_data?.employee_uuid;
     let msgVeiculo  = '';
 
     // item 9: atalho para repetir
@@ -466,19 +475,34 @@ async function exibirMenuVeiculo(session, from) {
         const reLabel = vSugerido.registroInterno ? ` (RE ${formatRI(vSugerido.registroInterno)})` : '';
         msgVeiculo +=
             `*Veículo associado ao seu cadastro:*\n` +
-            `*${vSugerido.placa}*${reLabel}${vSugerido.modelo ? ` — ${vSugerido.modelo}` : ''}\n\n` +
-            `Digite *1* para confirmar, ou informe a *placa* ou *RE* de outro veículo.\n\n`;
-    } else {
-        const veiculos = await buscarVeiculosAtivos();
-        const listaVeiculos = veiculos.length
-            ? veiculos.map((v, i) =>
-                `${i + 1}. *${v.placa}*${v.registroInterno ? ` — RE ${formatRI(v.registroInterno)}` : (v.modelo ? ` — ${v.modelo}` : '')}`
-              ).join('\n')
-            : '_Nenhum veículo ativo encontrado._';
+            `Digite *1* — *${vSugerido.placa}*${reLabel}${vSugerido.modelo ? ` — ${vSugerido.modelo}` : ''}\n\n`;
+    }
+
+    // Veículos da(s) obra(s) do funcionário, excluindo o principal
+    let veiculosObra = [];
+    if (employeeId) {
+        try {
+            veiculosObra = await buscarVeiculosDaObraDoFuncionario(employeeId, vSugerido?.id);
+        } catch (e) {
+            console.error('[CHATBOT] Erro ao buscar veículos da obra:', e.message);
+        }
+    }
+
+    if (veiculosObra.length) {
+        // Numera a partir de 2 quando há sugerido em "1"
+        const offset = vSugerido ? 2 : 1;
+        const lista = veiculosObra.map((v, i) =>
+            `${i + offset}. *${v.placa}*${v.registroInterno ? ` — RE ${formatRI(v.registroInterno)}` : (v.modelo ? ` — ${v.modelo}` : '')}`
+        ).join('\n');
+        msgVeiculo +=
+            `*Veículos na sua obra:*\n${lista}\n\n` +
+            `Digite o *número* da lista, ou informe a *placa*/*RE* de outro veículo.\n\n`;
+    } else if (!vSugerido) {
         msgVeiculo +=
             `Qual veículo você vai abastecer?\n` +
-            `Digite o *número*, a *placa* ou o *número de RE/frota*:\n\n` +
-            `${listaVeiculos}\n\n`;
+            `Digite a *placa* (ex: *ABC-1234*) ou o *número de RE/frota*.\n\n`;
+    } else {
+        msgVeiculo += `Ou informe a *placa* ou *RE* de outro veículo.\n\n`;
     }
 
     await responder(from,
@@ -549,29 +573,44 @@ async function exibirMenuLeitura(session, from) {
     const usaHorimetro = session.session_data?.usa_horimetro;
     const tipoLabel    = usaHorimetro ? 'Horímetro (horas)' : 'Odômetro (km)';
     const unidade      = usaHorimetro ? 'h' : 'km';
-    const campo        = usaHorimetro ? 'horimetro_informado' : 'odometro_informado';
+    const campoVeiculo = usaHorimetro ? 'horimetro' : 'odometro';
+    const campoSolic   = usaHorimetro ? 'horimetro_informado' : 'odometro_informado';
+    const veiculoId    = session.session_data?.veiculo_id;
 
-    let ultimaLeituraMsg = '';
+    // Busca em paralelo: valor atual no cadastro do veículo + última leitura registrada em solicitações
+    let leituraAtualMsg = '';
+    let ultimaSolicMsg  = '';
     try {
-        const [rows] = await db.query(
-            `SELECT ${campo} AS ultima FROM solicitacoes_abastecimento
-             WHERE veiculo_id = ? AND ${campo} IS NOT NULL AND status NOT IN ('CANCELADO')
-             ORDER BY data_solicitacao DESC, id DESC LIMIT 1`,
-            [session.session_data?.veiculo_id]
-        );
-        if (rows.length && rows[0].ultima !== null) {
-            const ultima = parseFloat(rows[0].ultima).toLocaleString('pt-BR');
-            ultimaLeituraMsg = `\nÚltima leitura registrada: *${ultima} ${unidade}*\n`;
+        const [[veicRows], [solicRows]] = await Promise.all([
+            db.query(`SELECT ${campoVeiculo} AS atual FROM vehicles WHERE id = ? LIMIT 1`, [veiculoId]),
+            db.query(
+                `SELECT ${campoSolic} AS ultima FROM solicitacoes_abastecimento
+                 WHERE veiculo_id = ? AND ${campoSolic} IS NOT NULL AND status NOT IN ('CANCELADO')
+                 ORDER BY data_solicitacao DESC, id DESC LIMIT 1`,
+                [veiculoId]
+            ),
+        ]);
+        if (veicRows.length && veicRows[0].atual !== null && parseFloat(veicRows[0].atual) > 0) {
+            const atual = parseFloat(veicRows[0].atual).toLocaleString('pt-BR');
+            leituraAtualMsg = `📊 ${usaHorimetro ? 'Horímetro' : 'Odômetro'} atual do veículo: *${atual} ${unidade}*\n`;
+        }
+        if (solicRows.length && solicRows[0].ultima !== null) {
+            const ultima = parseFloat(solicRows[0].ultima).toLocaleString('pt-BR');
+            ultimaSolicMsg = `🕘 Última leitura registrada em abastecimento: *${ultima} ${unidade}*\n`;
         }
     } catch (e) {
-        console.error('[CHATBOT] Erro ao buscar última leitura:', e.message);
+        console.error('[CHATBOT] Erro ao buscar leitura atual:', e.message);
     }
+
+    const bloco = (leituraAtualMsg || ultimaSolicMsg)
+        ? `\n${leituraAtualMsg}${ultimaSolicMsg}\n`
+        : '\n';
 
     await responder(from,
         `Combustível: *${session.session_data?.tipo_combustivel || ''}*\n\n` +
         `*Passo 5/7 — ${tipoLabel}*\n` +
         `Qual a leitura atual do *${tipoLabel.toLowerCase()}* do veículo?\n` +
-        `${ultimaLeituraMsg}\n` +
+        bloco +
         `Digite apenas o número:\n\n` +
         `0️⃣ *Voltar*`
     );
@@ -661,13 +700,45 @@ async function avancarParaObra(session, from) {
 }
 
 async function handleVeiculo(session, from, body) {
-    // item 4: query consistente com LIMIT 25
-    const veiculos = await buscarVeiculosAtivos();
+    const employeeId = session.session_data?.employee_uuid;
+    const vSugerido  = session.session_data?.veiculo_sugerido;
 
-    // item 9: 'R' para repetir última solicitação
+    // Monta lista contextual: sugerido em #1, veículos da obra do funcionário em #2..N
+    const veiculosObra = employeeId
+        ? await buscarVeiculosDaObraDoFuncionario(employeeId, vSugerido?.id).catch(() => [])
+        : [];
+    const listaContexto = [];
+    if (vSugerido) listaContexto.push(vSugerido);
+    listaContexto.push(...veiculosObra);
+
+    // item 9: 'R' para repetir última solicitação — REVALIDA vínculo veículo↔funcionário
     if (body.trim().toUpperCase() === 'R') {
         const ultima = session.session_data?._ultima;
         if (ultima?.veiculo_id) {
+            // Revalida: o veículo da última solicitação ainda está vinculado a este funcionário?
+            const vinculado = listaContexto.some(v => String(v.id) === String(ultima.veiculo_id));
+            if (!vinculado) {
+                await responder(from,
+                    `⚠️ O veículo *${ultima.veiculo_placa}* da sua última solicitação não está mais vinculado a você ou à sua obra atual.\n\n` +
+                    `Selecione um veículo da lista abaixo ou informe a *placa*/*RE*.`
+                );
+                await exibirMenuVeiculo(session, from);
+                return;
+            }
+            // Revalida obra também: a obra anterior ainda está ativa para este funcionário?
+            const [obraAtiva] = await db.query(
+                `SELECT 1 FROM obras_historico_veiculos
+                 WHERE employeeId = ? AND obraId = ? AND dataSaida IS NULL LIMIT 1`,
+                [String(employeeId), ultima.obra_id]
+            );
+            if (!obraAtiva.length) {
+                await responder(from,
+                    `⚠️ A obra *${ultima.obra_nome}* da sua última solicitação não está mais ativa para você.\n\n` +
+                    `Vou recomeçar a partir do veículo.`
+                );
+                await exibirMenuVeiculo(session, from);
+                return;
+            }
             const usaHorimetro = veiculoUsaHorimetro(ultima.veiculo_tipo || '');
             const d = {
                 ...session.session_data,
@@ -692,74 +763,58 @@ async function handleVeiculo(session, from, body) {
         }
     }
 
-    // Veículo sugerido confirmado com "1"
-    const vSugerido = session.session_data?.veiculo_sugerido;
-    if (vSugerido && body.trim() === '1') {
-        const veiculoCompleto = veiculos.find(v => v.id === vSugerido.id) || vSugerido;
-        const usaHorimetro = veiculoUsaHorimetro(veiculoCompleto.tipo);
-        const d = {
-            ...session.session_data,
-            veiculo_id:    veiculoCompleto.id,
-            veiculo_placa: veiculoCompleto.placa,
-            veiculo_tipo:  veiculoCompleto.tipo,
-            usa_horimetro: usaHorimetro,
-        };
-        await updateSession(session.id, 'obra', d);
-        await avancarParaObra({ ...session, step: 'obra', session_data: d }, from);
-        return;
+    // Match por número da lista contextual
+    let veiculoId = null;
+    const numSo = /^\d+$/.test(body.trim()) ? parseInt(body.trim(), 10) : NaN;
+    if (!isNaN(numSo) && numSo >= 1 && numSo <= listaContexto.length) {
+        veiculoId = listaContexto[numSo - 1].id;
     }
 
-    // Correspondência direta por placa ou RE (item 3 já aplicado em matchVeiculoDireto)
-    let veiculoId = matchVeiculoDireto(body, veiculos);
+    // Correspondência direta por placa ou RE dentro da lista contextual
+    if (!veiculoId) veiculoId = matchVeiculoDireto(body, listaContexto);
 
-    // Busca direta no banco para placa ou RE que não esteja nos 25 da lista
+    // Busca direta no banco para placa/RE de veículo fora da obra (operador pode abastecer outro)
     if (!veiculoId) {
         const vDireto = await buscarVeiculoPorPlacaOuRE(body);
         if (vDireto) {
             veiculoId = vDireto.id;
-            if (!veiculos.find(v => v.id === vDireto.id)) veiculos.push(vDireto);
-        }
-    }
-
-    // Match por número da lista
-    if (!veiculoId) {
-        const numSo = /^\d+$/.test(body.trim()) ? parseInt(body.trim(), 10) : NaN;
-        if (!isNaN(numSo) && numSo >= 1 && numSo <= veiculos.length) {
-            veiculoId = veiculos[numSo - 1].id;
+            if (!listaContexto.find(v => v.id === vDireto.id)) listaContexto.push(vDireto);
         }
     }
 
     // Referência genérica ("meu veículo")
     if (!veiculoId) {
         const referenciaGenerica = /\b(meu|minha|esse|este|o meu|meu veiculo|meu veículo)\b/.test(body.toLowerCase());
-        if (referenciaGenerica) {
-            const employeeId = session.session_data?.employee_uuid;
-            if (employeeId) {
-                const vAssoc = await buscarVeiculoFuncionario(employeeId);
-                if (vAssoc) veiculoId = vAssoc.id;
+        if (referenciaGenerica && employeeId) {
+            const vAssoc = await buscarVeiculoFuncionario(employeeId);
+            if (vAssoc) {
+                veiculoId = vAssoc.id;
+                if (!listaContexto.find(v => v.id === vAssoc.id)) listaContexto.push(vAssoc);
             }
         }
     }
 
-    // item 21: fuzzy match antes de chamar IA
-    if (!veiculoId) {
-        const found = fuzzyMatchNome(body, veiculos, 'placa') || fuzzyMatchNome(body, veiculos, 'modelo');
+    // item 21: fuzzy match antes de chamar IA (sobre a lista contextual)
+    if (!veiculoId && listaContexto.length) {
+        const found = fuzzyMatchNome(body, listaContexto, 'placa') || fuzzyMatchNome(body, listaContexto, 'modelo');
         if (found) veiculoId = found.id;
     }
 
-    // item 20: IA com fallback tratado
-    if (!veiculoId) veiculoId = await claudeMatchVeiculo(body, veiculos);
+    // item 20: IA com fallback (sobre a lista contextual)
+    if (!veiculoId && listaContexto.length) {
+        veiculoId = await claudeMatchVeiculo(body, listaContexto);
+    }
 
     if (!veiculoId) {
         await responder(from,
             `❌ Não consegui identificar o veículo com "*${body}*".\n\n` +
-            `Tente com o *número da lista*, a *placa completa* (ex: *ABC-1234*) ou o *número de RE/frota*.\n\n` +
+            `Digite o *número* da lista, a *placa completa* (ex: *ABC-1234*) ou o *número de RE/frota*.\n\n` +
             `0️⃣ *Voltar*`
         );
         return;
     }
 
-    const veiculo = veiculos.find(v => v.id === veiculoId);
+    const veiculo = listaContexto.find(v => v.id === veiculoId);
     if (!veiculo) {
         await responder(from, `❌ Veículo não encontrado. Tente novamente com a placa ou número de frota.`);
         return;
@@ -1080,6 +1135,19 @@ async function processarMensagem({ from, phoneNumber, body, hasMedia, mediaBase6
     processingPhones.add(from);
     try {
         await _processarMensagem({ from, phoneNumber, body, hasMedia, mediaBase64, mediaMimetype });
+    } catch (err) {
+        // Evita que qualquer exceção deixe o bot "mudo" para o usuário.
+        console.error('[CHATBOT] Exceção não tratada para', maskPhone(from), ':', err);
+        try {
+            await responder(from, `❌ Ocorreu um erro interno. Tente novamente em instantes ou envie *cancelar* para reiniciar.`);
+        } catch (_) { /* já logado em responder() */ }
+        if (global.io) {
+            global.io.emit('admin:notificacao', {
+                tipo: 'chatbot_excecao',
+                phone: maskPhone(from),
+                erro: err.message,
+            });
+        }
     } finally {
         processingPhones.delete(from);
     }
@@ -1107,10 +1175,28 @@ async function _processarMensagem({ from, phoneNumber, body, hasMedia, mediaBase
     }
 
     if (!session) {
+        // item 8: detectar sessão expirada por inatividade e avisar o usuário
+        const [expiradas] = await db.query(
+            `SELECT id, step, last_activity FROM whatsapp_chatbot_sessions
+             WHERE phone_number = ? AND step NOT IN ('concluido', 'cancelado')
+               AND last_activity < DATE_SUB(NOW(), INTERVAL ? MINUTE)
+             ORDER BY created_at DESC LIMIT 1`,
+            [from, SESSION_TIMEOUT_MIN]
+        );
+        if (expiradas.length) {
+            // Marca como cancelada para não aparecer de novo
+            await cancelSession(expiradas[0].id);
+            await responder(from,
+                `⏰ Sua solicitação anterior expirou por inatividade (mais de ${SESSION_TIMEOUT_MIN} min sem resposta).\n\n` +
+                `Vou começar uma nova solicitação do zero.`
+            );
+            // segue o fluxo normal de criação de sessão abaixo
+        }
+
         // item 5: regex com word boundary — não ativa com "ola pessoal" etc.
         const isStart = START_PATTERN.test(bodyLower);
         console.log(`[CHATBOT] isStart=${isStart} para ${maskPhone(from)}`);
-        if (!isStart && !hasMedia) return;
+        if (!isStart && !hasMedia && !expiradas.length) return;
 
         const funcionario = await identificarFuncionario(phoneNumber || from);
         console.log(`[CHATBOT] Funcionário:`, funcionario ? funcionario.nome : 'não encontrado');
@@ -1143,28 +1229,35 @@ async function _processarMensagem({ from, phoneNumber, body, hasMedia, mediaBase
         await updateSession(session.id, 'veiculo', sessionDataUpdate);
         session.session_data = sessionDataUpdate;
 
-        // Monta mensagem de boas-vindas
+        // Monta mensagem de boas-vindas (lista contextual: sugerido + veículos da obra)
         let msgVeiculo = '';
         if (ultimaData?.veiculo_placa) {
-            msgVeiculo += `Digite *R* para repetir: *${ultimaData.veiculo_placa}* / *${ultimaData.obra_nome}* / ${ultimaData.tipo_combustivel}\n\n`;
+            msgVeiculo += `↩️ Digite *R* para repetir: *${ultimaData.veiculo_placa}* / *${ultimaData.obra_nome}* / ${ultimaData.tipo_combustivel}\n\n`;
         }
+
+        const veiculosObra = await buscarVeiculosDaObraDoFuncionario(funcionario.id, veiculoAssociado?.id).catch(() => []);
+
         if (veiculoAssociado) {
             const reLabel = veiculoAssociado.registroInterno ? ` (RE ${formatRI(veiculoAssociado.registroInterno)})` : '';
             msgVeiculo +=
                 `*Veículo associado ao seu cadastro:*\n` +
-                `*${veiculoAssociado.placa}*${reLabel}${veiculoAssociado.modelo ? ` — ${veiculoAssociado.modelo}` : ''}\n\n` +
-                `Digite *1* para confirmar, ou informe a *placa* ou *RE* de outro veículo.\n\n`;
-        } else {
-            const veiculos = await buscarVeiculosAtivos();
-            const listaVeiculos = veiculos.length
-                ? veiculos.map((v, i) =>
-                    `${i + 1}. *${v.placa}*${v.registroInterno ? ` — RE ${formatRI(v.registroInterno)}` : (v.modelo ? ` — ${v.modelo}` : '')}`
-                  ).join('\n')
-                : '_Nenhum veículo ativo encontrado._';
+                `Digite *1* — *${veiculoAssociado.placa}*${reLabel}${veiculoAssociado.modelo ? ` — ${veiculoAssociado.modelo}` : ''}\n\n`;
+        }
+
+        if (veiculosObra.length) {
+            const offset = veiculoAssociado ? 2 : 1;
+            const lista = veiculosObra.map((v, i) =>
+                `${i + offset}. *${v.placa}*${v.registroInterno ? ` — RE ${formatRI(v.registroInterno)}` : (v.modelo ? ` — ${v.modelo}` : '')}`
+            ).join('\n');
+            msgVeiculo +=
+                `*Veículos na sua obra:*\n${lista}\n\n` +
+                `Digite o *número* da lista, ou informe a *placa*/*RE* de outro veículo.\n\n`;
+        } else if (!veiculoAssociado) {
             msgVeiculo +=
                 `Qual veículo você vai abastecer?\n` +
-                `Digite o *número*, a *placa* ou o *número de RE/frota*:\n\n` +
-                `${listaVeiculos}\n\n`;
+                `Digite a *placa* (ex: *ABC-1234*) ou o *número de RE/frota*.\n\n`;
+        } else {
+            msgVeiculo += `Ou informe a *placa* ou *RE* de outro veículo.\n\n`;
         }
 
         await responder(from,

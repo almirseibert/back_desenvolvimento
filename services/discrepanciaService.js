@@ -45,10 +45,19 @@ const MIN_ATIVIDADE_DIA_MIN = parseInt(process.env.ANALISE_MIN_ATIVIDADE_DIA_MIN
 const MS_PER_MIN = 60_000;
 const toMs = (v) => (v instanceof Date ? v.getTime() : new Date(v).getTime());
 
+// Emite ISO local SEM 'Z' — o frontend constrói dayStart como local também,
+// então precisamos da mesma referência (toISOString convertia pra UTC e
+// deslocava as barras da timeline em 3h em fusos UTC-3).
+const pad2Iso = (n) => String(n).padStart(2, '0');
+const toLocalIso = (ms) => {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${pad2Iso(d.getMonth() + 1)}-${pad2Iso(d.getDate())}`
+         + `T${pad2Iso(d.getHours())}:${pad2Iso(d.getMinutes())}:${pad2Iso(d.getSeconds())}`;
+};
 const serializeIntervals = (intervals) =>
     intervals.map(iv => ({
-        inicio: new Date(iv.inicio).toISOString(),
-        fim: new Date(iv.fim).toISOString(),
+        inicio: toLocalIso(iv.inicio),
+        fim: toLocalIso(iv.fim),
     }));
 
 // Mesma lógica do confrontoService — copiada para não atrelar a mudanças futuras lá.
