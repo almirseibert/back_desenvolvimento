@@ -919,3 +919,7 @@ exports.saveTicketMedio = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+
+// Reuso interno por outros controllers (ex: dashboardController/home-summary).
+exports._computeAnalyticsCore = _computeAnalyticsCore;
+exports._fmtDate = _fmtDate;
