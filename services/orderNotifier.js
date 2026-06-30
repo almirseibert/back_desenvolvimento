@@ -83,7 +83,7 @@ const buildOrderText = (order) => {
         `Combustível: ${fmtFuel(order.fuelType)}`,
         `Quantidade: ${litrosLinha}`,
     ];
-    if (order.readingLabel && order.readingValue && order.readingValue !== 'N/A') lines.push(`📏 ${order.readingLabel}: ${order.readingValue}`);
+    if (order.readingLabel && order.readingValue && order.readingValue !== 'N/A') lines.push(`${order.readingLabel}: ${order.readingValue}`);
     if (order.pricePerLiter) lines.push(`Valor/L: ${fmtMoney(order.pricePerLiter)}`);
     if (order.valorTotal)    lines.push(`Total: ${fmtMoney(order.valorTotal)}`);
     if (order.invoiceNumber) lines.push(`NF: ${order.invoiceNumber}`);
