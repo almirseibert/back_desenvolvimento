@@ -633,4 +633,37 @@ cron.schedule('45 6 * * *', async () => {
     }
 });
 
+// ====================================================================
+// CRON A CADA 5 MIN — Monitoramento de conexão do WhatsApp
+// Emite admin:notificacao { tipo: 'whatsapp_desconectado' } enquanto
+// desconectado, e 'whatsapp:reconectado' quando a conexão se restabelece.
+// Permite que o frontend exiba/remova o alerta sem depender de alguém
+// estar na tela de configurações.
+// ====================================================================
+let _waEstavaDesconectado = false;
+
+cron.schedule('*/5 * * * *', async () => {
+    if (!global.io) return;
+    try {
+        const { status } = await whatsappService.getStatus();
+        const desconectado = status !== 'PRONTO' && status !== 'AUTENTICANDO' && status !== 'AUTENTICADO';
+
+        if (desconectado && !_waEstavaDesconectado) {
+            // Acabou de desconectar — já notificado pelo getStatus() acima via whatsappService
+            _waEstavaDesconectado = true;
+            console.warn('⚠️ [CRON-WA] WhatsApp desconectado — alerta emitido para admins.');
+        } else if (!desconectado && _waEstavaDesconectado) {
+            // Reconectou — avisa o frontend para limpar o alerta
+            _waEstavaDesconectado = false;
+            global.io.emit('whatsapp:reconectado');
+            console.log('✅ [CRON-WA] WhatsApp reconectado — limpeza de alerta emitida.');
+        } else if (desconectado) {
+            // Continua desconectado — re-emite para admins que entraram depois
+            global.io.emit('admin:notificacao', { tipo: 'whatsapp_desconectado' });
+        }
+    } catch (e) {
+        console.error('❌ [CRON-WA] Erro ao verificar status WhatsApp:', e.message);
+    }
+});
+
 module.exports = cron;

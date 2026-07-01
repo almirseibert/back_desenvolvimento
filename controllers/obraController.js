@@ -212,8 +212,15 @@ const updateObra = async (req, res) => {
             const marcos = [30, 50, 70];
             for (const m of marcos) {
                 if (pctAntes < m && pctDepois >= m) {
-                    const [r] = await db.query('SELECT nome FROM obras WHERE id = ?', [id]);
-                    dispatchAsync('obra_progresso', { obra: r[0]?.nome || '—', pct: m });
+                    const [r] = await db.query('SELECT nome, responsavel, responsavel_email FROM obras WHERE id = ?', [id]);
+                    const obraNome = r[0]?.nome || '—';
+                    // Notifica o responsável da própria obra, além dos destinos globais
+                    // configurados em notification_targets para o evento.
+                    const extraContacts = [];
+                    if (r[0]?.responsavel_email) {
+                        extraContacts.push({ channel: 'email', contact: r[0].responsavel_email, name: r[0].responsavel || 'Responsável da Obra' });
+                    }
+                    dispatchAsync('obra_progresso', { obra: obraNome, pct: m, obraId: id }, { obraId: id, extraContacts });
                     break;
                 }
             }

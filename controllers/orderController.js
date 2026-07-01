@@ -9,6 +9,7 @@
 const db = require('../database');
 const crypto = require('crypto');
 const whatsappService = require('../services/whatsappService');
+const { sendEmail } = require('../services/emailService');
 const { dispatchAsync } = require('../services/notificationDispatcher');
 
 // --- Funções Auxiliares ---
@@ -57,22 +58,22 @@ const getSafeObraId = (id) => {
 // ============================================================================
 // Helper: envia WhatsApp em background (não bloqueia a resposta HTTP)
 // ============================================================================
-const _sendOrderWhatsApp = async ({ orderNumber, supplierId, status, totalValue, anexos, isUpdate = false, isCanceled = false }) => {
+const _notifyOrderCS = async ({ orderNumber, supplierId, status, totalValue, anexos, isUpdate = false, isCanceled = false }) => {
     if (!supplierId) return;
 
     try {
         const [partnerRows] = await db.execute(
-            'SELECT razaoSocial, whatsappNumber, telefone FROM partners WHERE id = ?',
+            'SELECT razaoSocial, whatsapp, email, envia_por_whatsapp, envia_por_email FROM partners WHERE id = ?',
             [supplierId]
         );
         const partner = partnerRows[0];
         if (!partner) return;
 
-        const phone = partner.whatsappNumber || partner.telefone;
-        if (!phone) return;
+        const wantWa = partner.envia_por_whatsapp == 1 && !!partner.whatsapp;
+        const wantEm = partner.envia_por_email    == 1 && !!partner.email;
+        if (!wantWa && !wantEm) return;
 
         const numStr = String(orderNumber).padStart(6, '0');
-
         let msg = '';
         let motivo = '';
 
@@ -113,9 +114,31 @@ const _sendOrderWhatsApp = async ({ orderNumber, supplierId, status, totalValue,
             if (arr.length > 0 && arr[0].url) anexoUrl = arr[0].url;
         } catch (_) {}
 
-        await whatsappService.enviarMensagem(phone, partner.razaoSocial, motivo, msg, anexoUrl);
+        if (wantWa) {
+            try {
+                await whatsappService.enviarMensagem(partner.whatsapp, partner.razaoSocial, motivo, msg, anexoUrl);
+                console.log(`✅ [orderController] WhatsApp enviado para ${partner.razaoSocial} (Ordem C/S #${numStr})`);
+            } catch (e) {
+                console.warn(`⚠️ [orderController] WhatsApp falhou para ${partner.razaoSocial}:`, e.message);
+            }
+        }
+
+        if (wantEm) {
+            try {
+                const htmlMsg = msg.replace(/\*(.*?)\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
+                await sendEmail({
+                    to: partner.email,
+                    subject: motivo,
+                    text: msg,
+                    html: `<div style="font-family:Arial,sans-serif;font-size:13px">${htmlMsg}</div>`,
+                });
+                console.log(`✅ [orderController] E-mail enviado para ${partner.razaoSocial} (Ordem C/S #${numStr})`);
+            } catch (e) {
+                console.warn(`⚠️ [orderController] E-mail falhou para ${partner.razaoSocial}:`, e.message);
+            }
+        }
     } catch (err) {
-        console.error('[WhatsApp] Falha no envio em background:', err.message);
+        console.error('[orderController] Falha na notificação da Ordem C/S:', err.message);
     }
 };
 
@@ -230,9 +253,9 @@ const createOrder = async (req, res) => {
         connection.release();
     }
 
-    // WhatsApp em background (após resposta HTTP já enviada)
-    if (data.notifyWhatsapp && newOrderNumber) {
-        _sendOrderWhatsApp({
+    // Notifica parceiro por WhatsApp/e-mail conforme flags do cadastro (background)
+    if (newOrderNumber) {
+        _notifyOrderCS({
             orderNumber: newOrderNumber,
             supplierId:  data.supplierId,
             status:      data.status,
@@ -333,9 +356,9 @@ const updateOrder = async (req, res) => {
         connection.release();
     }
 
-    // WhatsApp em background
-    if (data.notifyWhatsapp && originalOrder) {
-        _sendOrderWhatsApp({
+    // Notifica parceiro por WhatsApp/e-mail conforme flags do cadastro (background)
+    if (originalOrder) {
+        _notifyOrderCS({
             orderNumber: originalOrder.orderNumber,
             supplierId:  data.supplierId,
             status:      data.status,
@@ -378,9 +401,9 @@ const cancelOrder = async (req, res) => {
         connection.release();
     }
 
-    // WhatsApp em background
+    // Notifica parceiro por WhatsApp/e-mail conforme flags do cadastro (background)
     if (originalOrder?.supplierId) {
-        _sendOrderWhatsApp({
+        _notifyOrderCS({
             orderNumber: originalOrder.orderNumber,
             supplierId:  originalOrder.supplierId,
             status:      'Cancelada',

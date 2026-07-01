@@ -414,6 +414,15 @@ const http = require('http');
             )
         `);
         console.log('✅ notification_targets: tabela ok.');
+
+        // Adiciona 'internal_contact' ao enum de target_type (idempotente).
+        try {
+            await db.query(
+                "ALTER TABLE notification_targets MODIFY COLUMN target_type ENUM('user','role','employee','phone','email_address','internal_contact') NOT NULL"
+            );
+        } catch (alterErr) {
+            console.warn('⚠️ [migration] enum internal_contact em notification_targets:', alterErr.message);
+        }
     } catch (e) {
         console.warn('⚠️ [migration] notification_targets:', e.message);
     }
@@ -634,6 +643,80 @@ const http = require('http');
         console.log('✅ Migração comboio_periodos_obra concluída.');
     } catch (e) {
         console.warn('⚠️ [migration] comboio_periodos_obra:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Documentos dos Veículos (CRLV, PDFs, etc.)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS vehicle_documents (
+                id          VARCHAR(36)  PRIMARY KEY,
+                vehicle_id  VARCHAR(36)  NOT NULL,
+                nome        VARCHAR(255) NOT NULL,
+                tipo        VARCHAR(100) DEFAULT 'Outro',
+                url         VARCHAR(500) NOT NULL,
+                tamanho     INT          DEFAULT NULL,
+                uploaded_by INT          DEFAULT NULL,
+                created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_vdoc_vehicle (vehicle_id),
+                FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
+            )
+        `);
+        console.log('✅ Migração vehicle_documents concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] vehicle_documents:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — responsavel_email em obras (Item 4: responsável notificável)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`ALTER TABLE obras ADD COLUMN IF NOT EXISTS responsavel_email VARCHAR(255) DEFAULT NULL`);
+        console.log('✅ Migração obras.responsavel_email concluída.');
+    } catch (e) {
+        if (e.code === 'ER_PARSE_ERROR') {
+            // MySQL < 8.0.29: sem suporte a IF NOT EXISTS em ADD COLUMN
+            try {
+                await db.query(`ALTER TABLE obras ADD COLUMN responsavel_email VARCHAR(255) DEFAULT NULL`);
+                console.log('✅ Migração obras.responsavel_email concluída (fallback).');
+            } catch (e2) {
+                if (e2.code !== 'ER_DUP_FIELDNAME') console.warn('⚠️ [migration] obras.responsavel_email:', e2.message);
+            }
+        } else if (e.code !== 'ER_DUP_FIELDNAME') {
+            console.warn('⚠️ [migration] obras.responsavel_email:', e.message);
+        }
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — notification_log (Item 3: histórico de notificações enviadas)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS notification_log (
+                id           VARCHAR(36)  PRIMARY KEY,
+                event_type   VARCHAR(100) NOT NULL,
+                channel      VARCHAR(30)  NOT NULL,
+                contact      VARCHAR(255) NOT NULL,
+                obra_id      VARCHAR(36)  DEFAULT NULL,
+                status       ENUM('sent','failed','skipped') NOT NULL DEFAULT 'sent',
+                error_msg    TEXT         DEFAULT NULL,
+                payload_json TEXT         DEFAULT NULL,
+                created_at   TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_nlog_event   (event_type),
+                INDEX idx_nlog_obra    (obra_id),
+                INDEX idx_nlog_created (created_at)
+            )
+        `);
+        console.log('✅ Migração notification_log concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] notification_log:', e.message);
     }
 })();
 
@@ -872,6 +955,7 @@ const sigasulRoutes = require('./routes/sigasulRoutes');
 const vehicleTypeConfigRoutes = require('./routes/vehicleTypeConfigRoutes');
 const vehicleTaxonomyRoutes = require('./routes/vehicleTaxonomyRoutes');
 const partnerFuelCreditsRoutes = require('./routes/partnerFuelCreditsRoutes');
+const notificationLogRoutes    = require('./routes/notificationLogRoutes');
 
 // ====================================================================
 // CONFIGURAÇÃO DO HTTP SERVER E SOCKET.IO
@@ -991,6 +1075,7 @@ apiRouter.use('/sigasul', sigasulRoutes);
 apiRouter.use('/vehicle-type-configs', vehicleTypeConfigRoutes);
 apiRouter.use('/vehicle-taxonomy', vehicleTaxonomyRoutes);
 apiRouter.use('/partnerFuelCredits', partnerFuelCreditsRoutes);
+apiRouter.use('/notification-log', notificationLogRoutes);
 
 // ─── WEBHOOK PÚBLICO DO CHATBOT ─────────────────────────────────────────────
 // Deve ficar ANTES de app.use('/api', apiRouter) para não passar pelo authMiddleware

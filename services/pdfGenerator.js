@@ -72,7 +72,7 @@ const generateOrderPdf = async (order = {}) => {
             [order.readingLabel || 'Leitura', String(order.readingValue ?? 'N/A')],
             ['Posto Autorizado',        order.partnerName || (order.tipo === 'saida' ? 'Comboio Interno' : 'N/A')],
             ['Combustível Autorizado',  fmtFuel(order.fuelType)],
-            ['Litros Liberados',        `${parseFloat(order.liters || 0).toFixed(2)} L`],
+            ['Litros Liberados',        order.isFillUp ? 'Tanque Cheio' : `${parseFloat(order.liters || 0).toFixed(2)} L`],
         ];
         if (order.pricePerLiter) rows.push(['Valor por Litro', `R$ ${parseFloat(order.pricePerLiter).toFixed(3)}`]);
         if (order.valorTotal)    rows.push(['Valor Total',     `R$ ${parseFloat(order.valorTotal).toFixed(2)}`]);
