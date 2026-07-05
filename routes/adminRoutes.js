@@ -1036,6 +1036,43 @@ router.get('/solicitacao-erros/resumo', adminOnly, async (req, res) => {
     }
 });
 
+// ─── LOG DE E-MAILS ENVIADOS ──────────────────────────────────────────────────
+
+router.get('/email-log', adminOnly, async (req, res) => {
+    try {
+        const { from, to, status, tipo, limit } = req.query;
+        const conds = [];
+        const params = [];
+        if (from)   { conds.push('created_at >= ?'); params.push(from); }
+        if (to)     { conds.push('created_at <= ?'); params.push(to + ' 23:59:59'); }
+        if (status) { conds.push('status = ?');      params.push(status); }
+        if (tipo)   { conds.push('tipo = ?');        params.push(tipo); }
+        const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+        const max = Math.min(parseInt(limit, 10) || 300, 2000);
+        const [rows] = await db.query(
+            `SELECT id, para, assunto, tipo, status, erro, message_id, enviado_por, created_at
+             FROM email_log ${where} ORDER BY created_at DESC LIMIT ${max}`,
+            params
+        );
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao listar email_log:', error);
+        res.status(500).json({ error: 'Erro ao listar log de e-mails.' });
+    }
+});
+
+// Detalhe (inclui corpo) de um e-mail específico
+router.get('/email-log/:id', adminOnly, async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT * FROM email_log WHERE id = ?', [req.params.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'E-mail não encontrado.' });
+        res.json(rows[0]);
+    } catch (error) {
+        console.error('Erro ao buscar e-mail:', error);
+        res.status(500).json({ error: 'Erro ao buscar e-mail.' });
+    }
+});
+
 // ─── SESSÕES ATIVAS (stub) ────────────────────────────────────────────────────
 
 router.get('/sessions', adminOnly, async (req, res) => {

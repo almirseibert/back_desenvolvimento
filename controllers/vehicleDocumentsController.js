@@ -33,8 +33,43 @@ const uploadDocument = async (req, res) => {
         console.log(`📄 Documento adicionado ao veículo ${req.params.id}: ${nome}`);
         res.status(201).json({ id, url, nome, tipo });
     } catch (error) {
-        console.error('Erro ao salvar documento:', error);
+        console.error('❌ Erro ao salvar documento:', error.code, '|', error.sqlMessage || error.message);
         res.status(500).json({ error: 'Erro ao salvar documento' });
+    }
+};
+
+// Documentos dos veículos que estão na(s) obra(s) atual(is) do operador logado.
+// Escopo: todas as obras onde o operador tem alocação ativa (dataSaida IS NULL),
+// e todos os veículos atualmente nessas obras que possuam PDFs anexos.
+const listMyObraDocuments = async (req, res) => {
+    try {
+        // req.user não traz employeeId — buscamos no banco.
+        const [urows] = await db.execute('SELECT employeeId FROM users WHERE id = ?', [req.user.id]);
+        const employeeId = urows[0]?.employeeId || null;
+        if (!employeeId) {
+            return res.json([]); // usuário sem funcionário vinculado → nenhuma obra
+        }
+
+        const [rows] = await db.execute(
+            `SELECT vd.id, vd.vehicle_id, vd.nome, vd.tipo, vd.url, vd.tamanho, vd.created_at,
+                    v.placa, v.modelo, v.registroInterno, v.tipo AS veiculo_tipo,
+                    h.obraId, o.nome AS obra_nome
+             FROM vehicle_documents vd
+             JOIN vehicles v ON vd.vehicle_id = v.id
+             JOIN obras_historico_veiculos h ON h.veiculoId = v.id AND h.dataSaida IS NULL
+             LEFT JOIN obras o ON o.id = h.obraId
+             WHERE h.obraId IN (
+                 SELECT DISTINCT h2.obraId
+                 FROM obras_historico_veiculos h2
+                 WHERE h2.employeeId = ? AND h2.dataSaida IS NULL
+             )
+             ORDER BY o.nome, v.placa, vd.created_at DESC`,
+            [employeeId]
+        );
+        res.json(rows);
+    } catch (error) {
+        console.error('❌ Erro ao listar documentos da obra do operador:', error.code, '|', error.sqlMessage || error.message);
+        res.status(500).json({ error: 'Erro ao listar documentos' });
     }
 };
 
@@ -64,4 +99,4 @@ const deleteDocument = async (req, res) => {
     }
 };
 
-module.exports = { listDocuments, uploadDocument, deleteDocument };
+module.exports = { listDocuments, uploadDocument, deleteDocument, listMyObraDocuments };

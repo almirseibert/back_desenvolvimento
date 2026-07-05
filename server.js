@@ -659,15 +659,99 @@ const http = require('http');
                 tipo        VARCHAR(100) DEFAULT 'Outro',
                 url         VARCHAR(500) NOT NULL,
                 tamanho     INT          DEFAULT NULL,
-                uploaded_by INT          DEFAULT NULL,
+                uploaded_by VARCHAR(36)  DEFAULT NULL,
                 created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_vdoc_vehicle (vehicle_id),
                 FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
             )
         `);
+        // Correção: uploaded_by deve casar com users.id (VARCHAR(36) UUID), não INT.
+        // Sem isso o INSERT de req.user.id (UUID) estoura "Data truncated for column 'uploaded_by'" → 500.
+        try {
+            await db.query(`ALTER TABLE vehicle_documents
+                MODIFY COLUMN uploaded_by VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL`);
+        } catch (e2) {
+            console.warn('⚠️ [migration] vehicle_documents.uploaded_by:', e2.message);
+        }
         console.log('✅ Migração vehicle_documents concluída.');
     } catch (e) {
         console.warn('⚠️ [migration] vehicle_documents:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Log de e-mails enviados pelo sistema (auditoria de envios)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS email_log (
+                id          VARCHAR(36)  PRIMARY KEY,
+                para        VARCHAR(255) NOT NULL,
+                assunto     VARCHAR(255) DEFAULT NULL,
+                corpo       LONGTEXT     DEFAULT NULL,
+                tipo        VARCHAR(60)  DEFAULT NULL,
+                status      VARCHAR(20)  NOT NULL DEFAULT 'sent',
+                erro        TEXT         DEFAULT NULL,
+                message_id  VARCHAR(255) DEFAULT NULL,
+                enviado_por VARCHAR(36)  DEFAULT NULL,
+                created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_email_log_created (created_at),
+                INDEX idx_email_log_status  (status)
+            )
+        `);
+        console.log('✅ Migração email_log concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] email_log:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Sugestões dos usuários (Administração → Comunicação)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS suggestions (
+                id          VARCHAR(36)  PRIMARY KEY,
+                user_id     VARCHAR(36)  DEFAULT NULL,
+                user_nome   VARCHAR(150) DEFAULT NULL,
+                texto       TEXT         NOT NULL,
+                anexos      JSON         DEFAULT NULL,
+                status      VARCHAR(20)  NOT NULL DEFAULT 'nova',
+                created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_suggestions_status  (status),
+                INDEX idx_suggestions_created (created_at)
+            )
+        `);
+        console.log('✅ Migração suggestions concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] suggestions:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Vínculos entre veículos (cavalo↔reboque, máquina↔acessório)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS vehicle_links (
+                id                VARCHAR(36) PRIMARY KEY,
+                parent_vehicle_id VARCHAR(36) NOT NULL,
+                child_vehicle_id  VARCHAR(36) NOT NULL,
+                tipo_vinculo      VARCHAR(60) DEFAULT NULL,
+                observacao        VARCHAR(255) DEFAULT NULL,
+                ativo             TINYINT     NOT NULL DEFAULT 1,
+                created_at        TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+                data_fim          DATETIME    DEFAULT NULL,
+                INDEX idx_vlink_parent (parent_vehicle_id),
+                INDEX idx_vlink_child  (child_vehicle_id)
+            )
+        `);
+        console.log('✅ Migração vehicle_links concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] vehicle_links:', e.message);
     }
 })();
 
@@ -956,6 +1040,9 @@ const vehicleTypeConfigRoutes = require('./routes/vehicleTypeConfigRoutes');
 const vehicleTaxonomyRoutes = require('./routes/vehicleTaxonomyRoutes');
 const partnerFuelCreditsRoutes = require('./routes/partnerFuelCreditsRoutes');
 const notificationLogRoutes    = require('./routes/notificationLogRoutes');
+const suggestionRoutes         = require('./routes/suggestionRoutes');
+const vehicleLinkRoutes        = require('./routes/vehicleLinkRoutes');
+const comboioReportRoutes      = require('./routes/comboioReportRoutes');
 
 // ====================================================================
 // CONFIGURAÇÃO DO HTTP SERVER E SOCKET.IO
@@ -1076,6 +1163,9 @@ apiRouter.use('/vehicle-type-configs', vehicleTypeConfigRoutes);
 apiRouter.use('/vehicle-taxonomy', vehicleTaxonomyRoutes);
 apiRouter.use('/partnerFuelCredits', partnerFuelCreditsRoutes);
 apiRouter.use('/notification-log', notificationLogRoutes);
+apiRouter.use('/suggestions', suggestionRoutes);
+apiRouter.use('/vehicle-links', vehicleLinkRoutes);
+apiRouter.use('/comboio-report', comboioReportRoutes);
 
 // ─── WEBHOOK PÚBLICO DO CHATBOT ─────────────────────────────────────────────
 // Deve ficar ANTES de app.use('/api', apiRouter) para não passar pelo authMiddleware

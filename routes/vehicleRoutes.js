@@ -70,6 +70,9 @@ const uploadDoc = multer({
 // --- Rotas ---
 router.use(authMiddleware);
 
+// Documentos das obras do operador logado (deve vir ANTES de '/:id' para não ser capturada por ele)
+router.get('/meus-documentos', vehicleDocumentsController.listMyObraDocuments);
+
 // Rotas CRUD padrão
 router.get('/', vehicleController.getAllVehicles);
 router.get('/:id', vehicleController.getVehicleById);
