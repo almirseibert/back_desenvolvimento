@@ -50,6 +50,31 @@ const getAllVehicles = async (req, res) => {
         `;
         const [rows] = await db.execute(query);
         const vehicles = rows.map(parseVehicleJsonFields);
+
+        // Vínculos ativos (reboque/acessório atrelado a um veículo principal).
+        // Uma query auxiliar + mapas em JS — evita JSON_ARRAYAGG e é O(V + L).
+        const [links] = await db.execute(
+            'SELECT id, parent_vehicle_id, child_vehicle_id, tipo_vinculo FROM vehicle_links WHERE ativo = 1'
+        );
+        const childToParent = new Map();   // childId → { linkId, parentId, tipo_vinculo }
+        const parentToChildren = new Map(); // parentId → [{ linkId, id, tipo_vinculo }]
+        for (const l of links) {
+            childToParent.set(l.child_vehicle_id, {
+                linkId: l.id, parentId: l.parent_vehicle_id, tipo_vinculo: l.tipo_vinculo,
+            });
+            if (!parentToChildren.has(l.parent_vehicle_id)) parentToChildren.set(l.parent_vehicle_id, []);
+            parentToChildren.get(l.parent_vehicle_id).push({
+                linkId: l.id, id: l.child_vehicle_id, tipo_vinculo: l.tipo_vinculo,
+            });
+        }
+        for (const v of vehicles) {
+            const parent = childToParent.get(v.id);
+            v.linkedParentId  = parent ? parent.parentId : null;
+            v.linkId          = parent ? parent.linkId : null;
+            v.linkVinculoTipo = parent ? parent.tipo_vinculo : null;
+            v.linkedChildren  = parentToChildren.get(v.id) || [];
+        }
+
         res.json(vehicles);
     } catch (error) {
         console.error('Erro ao buscar veículos:', error);
