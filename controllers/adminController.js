@@ -64,13 +64,16 @@ const approveRegistrationRequest = async (req, res) => {
 // --- ROTA: Rejeitar uma solicitação ---
 const deleteRegistrationRequest = async (req, res) => {
     const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'ID não informado.' });
     try {
-        // Deleta o usuário da tabela 'users' apenas se ele estiver inativo (segurança)
-        await db.execute("DELETE FROM users WHERE id = ? AND status = 'inativo'", [id]);
+        const [result] = await db.query("DELETE FROM users WHERE id = ? AND status = 'inativo'", [id]);
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Solicitação não encontrada ou já processada.' });
+        }
         res.status(204).end();
     } catch (error) {
-        console.error('Erro ao rejeitar solicitação:', error);
-        res.status(500).json({ error: 'Erro ao rejeitar solicitação.' });
+        console.error('Erro ao rejeitar solicitação [id=%s]:', id, error);
+        res.status(500).json({ error: 'Erro ao rejeitar solicitação.', detail: error.message, code: error.code });
     }
 };
 

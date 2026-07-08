@@ -16,6 +16,7 @@ const http = require('http');
         { table: 'users',                  column: 'tentativas_falhas_abastecimento', def: 'INT DEFAULT 0' },
         { table: 'users',                  column: 'bloqueado_abastecimento',         def: 'TINYINT(1) DEFAULT 0' },
         { table: 'users',                  column: 'page_permissions',                def: 'JSON DEFAULT NULL' },
+        { table: 'users',                  column: 'canAccessAnaliseGerencial',       def: 'TINYINT(1) NOT NULL DEFAULT 0' },
         { table: 'comboio_transactions',   column: 'authNumber',                      def: 'INT UNSIGNED DEFAULT NULL' },
         { table: 'obras',                  column: 'tipo_registro',                   def: "ENUM('obra','centro_custo') DEFAULT 'obra'" },
         // FASE 1.3 — Campos adicionais em obras
@@ -702,6 +703,31 @@ const http = require('http');
         console.log('✅ Migração partner_fuel_credit_entries + v_partner_fuel_balance concluída.');
     } catch (e) {
         console.warn('⚠️ [migration] partner_fuel_credit_entries:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Documentos de veículos (CRLV, AET, Tacógrafo, Notas etc.)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS vehicle_documents (
+                id            VARCHAR(36)  PRIMARY KEY,
+                vehicle_id    VARCHAR(36)  NOT NULL,
+                tipo          VARCHAR(60)  NOT NULL DEFAULT 'Outros',
+                descricao     VARCHAR(255) DEFAULT NULL,
+                nome_original VARCHAR(255) NOT NULL,
+                filepath      VARCHAR(500) NOT NULL,
+                url           VARCHAR(500) NOT NULL,
+                created_at    TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_vdoc_vehicle (vehicle_id),
+                FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
+            )
+        `);
+        console.log('✅ Migração vehicle_documents concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] vehicle_documents:', e.message);
     }
 })();
 

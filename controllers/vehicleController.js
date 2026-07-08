@@ -761,6 +761,64 @@ const endMaintenance = async (req, res) => {
     }
 };
 
+// --- DOCUMENTOS DO VEÍCULO ---
+
+const getVehicleDocuments = async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [rows] = await db.execute(
+            'SELECT * FROM vehicle_documents WHERE vehicle_id = ? ORDER BY created_at DESC',
+            [id]
+        );
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao buscar documentos:', error);
+        res.status(500).json({ error: 'Erro ao buscar documentos do veículo.' });
+    }
+};
+
+const uploadVehicleDocument = async (req, res) => {
+    const { id } = req.params;
+    const { tipo, descricao } = req.body;
+    if (!req.file) return res.status(400).json({ error: 'Arquivo obrigatório.' });
+
+    const docId = randomUUID();
+    const fileUrl = `/uploads/docs/${req.file.filename}`;
+
+    try {
+        await db.execute(
+            'INSERT INTO vehicle_documents (id, vehicle_id, tipo, descricao, nome_original, filepath, url) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [docId, id, tipo || 'Outros', descricao || null, req.file.originalname, req.file.path, fileUrl]
+        );
+        const [rows] = await db.execute('SELECT * FROM vehicle_documents WHERE id = ?', [docId]);
+        res.status(201).json(rows[0]);
+    } catch (error) {
+        console.error('Erro ao salvar documento:', error);
+        res.status(500).json({ error: 'Erro ao salvar documento.' });
+    }
+};
+
+const deleteVehicleDocument = async (req, res) => {
+    const { id, docId } = req.params;
+    try {
+        const [rows] = await db.execute(
+            'SELECT * FROM vehicle_documents WHERE id = ? AND vehicle_id = ?',
+            [docId, id]
+        );
+        if (!rows.length) return res.status(404).json({ error: 'Documento não encontrado.' });
+
+        const doc = rows[0];
+        if (doc.filepath && fs.existsSync(doc.filepath)) {
+            fs.unlinkSync(doc.filepath);
+        }
+        await db.execute('DELETE FROM vehicle_documents WHERE id = ?', [docId]);
+        res.status(204).end();
+    } catch (error) {
+        console.error('Erro ao excluir documento:', error);
+        res.status(500).json({ error: 'Erro ao excluir documento.' });
+    }
+};
+
 module.exports = {
     getAllVehicles,
     getVehicleById,
@@ -773,5 +831,8 @@ module.exports = {
     assignToOperational,
     unassignFromOperational,
     startMaintenance,
-    endMaintenance
+    endMaintenance,
+    getVehicleDocuments,
+    uploadVehicleDocument,
+    deleteVehicleDocument,
 };

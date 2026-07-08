@@ -26,7 +26,7 @@ const storage = multer.diskStorage({
     }
 });
 
-// --- CORREÇÃO DE SEGURANÇA: FILE FILTER RIGOROSO PARA IMAGENS ---
+// --- FILE FILTER: apenas imagens para foto do veículo ---
 const fileFilter = (req, file, cb) => {
     const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp'];
     if (allowedMimeTypes.includes(file.mimetype)) {
@@ -36,11 +36,33 @@ const fileFilter = (req, file, cb) => {
     }
 };
 
-const upload = multer({ 
-    storage: storage, 
-    fileFilter: fileFilter, 
-    limits: { fileSize: 5 * 1024 * 1024 } 
+const upload = multer({
+    storage: storage,
+    fileFilter: fileFilter,
+    limits: { fileSize: 5 * 1024 * 1024 }
 });
+
+// --- Multer para documentos do veículo (PDF + imagens, até 20 MB) ---
+const docStorage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        const docDir = path.join(absoluteUploadDir, 'docs');
+        if (!fs.existsSync(docDir)) fs.mkdirSync(docDir, { recursive: true });
+        cb(null, docDir);
+    },
+    filename: function (req, file, cb) {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const ext = path.extname(file.originalname);
+        cb(null, `vdoc-${uniqueSuffix}${ext}`);
+    }
+});
+
+const docFileFilter = (req, file, cb) => {
+    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Apenas PDF e imagens são permitidos para documentos.'), false);
+};
+
+const uploadDoc = multer({ storage: docStorage, fileFilter: docFileFilter, limits: { fileSize: 20 * 1024 * 1024 } });
 
 // --- Rotas ---
 router.use(authMiddleware);
@@ -60,6 +82,11 @@ router.post(
     vehicleController.uploadVehicleImage
 );
 
+
+// --- Rotas de Documentos ---
+router.get('/:id/documents', vehicleController.getVehicleDocuments);
+router.post('/:id/documents', uploadDoc.single('docFile'), vehicleController.uploadVehicleDocument);
+router.delete('/:id/documents/:docId', vehicleController.deleteVehicleDocument);
 
 // --- Rotas de Alocação (sem mudança) ---
 router.post('/:id/allocate-obra', vehicleController.allocateToObra);
