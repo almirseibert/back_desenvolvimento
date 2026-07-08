@@ -313,7 +313,7 @@ const allocateToObra = async (req, res) => {
         const employeeIdStr = String(employeeId);
         const readingVal = parseFloat(readingValue) || 0;
 
-        const [obraRows] = await connection.execute('SELECT nome FROM obras WHERE id = ?', [obraIdStr]);
+        const [obraRows] = await connection.execute('SELECT nome, status, dataInicio FROM obras WHERE id = ?', [obraIdStr]);
         const [employeeRows] = await connection.execute('SELECT nome FROM employees WHERE id = ?', [employeeIdStr]);
         const [vehicleRows] = await connection.execute('SELECT * FROM vehicles WHERE id = ?', [id]);
 
@@ -402,9 +402,20 @@ const allocateToObra = async (req, res) => {
         const obraHistoryPlaceholders = obraHistoryFields.map(() => '?').join(', '); 
 
         await connection.execute(
-            `INSERT INTO obras_historico_veiculos (${obraHistoryFields.join(', ')}) VALUES (${obraHistoryPlaceholders})`, 
+            `INSERT INTO obras_historico_veiculos (${obraHistoryFields.join(', ')}) VALUES (${obraHistoryPlaceholders})`,
             obraHistoryValues
         );
+
+        // Planejamento: 1ª alocação de equipamento leva a obra para 'mobilizacao'.
+        // A ativação ('ativa') só acontece no 1º lançamento de horas (billingController).
+        // Evento único — remover a alocação não reverte.
+        if (['radar', 'planejada'].includes(obra.status)) {
+            await connection.execute(
+                'UPDATE obras SET status = ? WHERE id = ?',
+                ['mobilizacao', obraIdStr]
+            );
+            console.log(`✅ Obra "${obra.nome}" em mobilização (1ª alocação de equipamento).`);
+        }
 
         // Fase 2.6 — Se for comboio, abre novo período de obra
         // (fecha qualquer anterior automaticamente)

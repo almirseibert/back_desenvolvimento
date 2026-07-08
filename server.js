@@ -55,6 +55,17 @@ const http = require('http');
         { table: 'refuelings',             column: 'reserved_amount',                  def: 'DECIMAL(12,2) DEFAULT NULL' },
         { table: 'refuelings',             column: 'reserved_price',                   def: 'DECIMAL(8,3) DEFAULT NULL' },
         { table: 'refuelings',             column: 'is_full_tank',                     def: 'TINYINT(1) DEFAULT 0' },
+        // ── Módulo de Planejamento de Obras (pré-obra) ──
+        // Ciclo de vida: radar → planejada → mobilizacao → ativa → finalizada.
+        // 'dataFimPrevisto' já existia no schema (órfã) e foi adotada; aqui só o par de início.
+        { table: 'obras',                  column: 'dataInicioPrevisto',               def: 'DATE DEFAULT NULL' },
+        { table: 'obras',                  column: 'origemInfo',                       def: 'VARCHAR(255) DEFAULT NULL' },
+        { table: 'obras',                  column: 'confiancaInfo',                    def: "ENUM('rumor','plano_oficial','contrato_assinado') DEFAULT NULL" },
+        { table: 'obras',                  column: 'obsPlanejamento',                  def: 'TEXT DEFAULT NULL' },
+        // Plano de trabalho por SUBGRUPO (vehicles.sub_tipo) — contratos diferenciam
+        // ex. Escavadeira 13t vs 26t. Campos antigos (…PorTipo) seguem como fallback.
+        { table: 'obras',                  column: 'horasContratadasPorSubTipo',       def: 'JSON DEFAULT NULL' },
+        { table: 'obras',                  column: 'valoresPorSubTipo',                def: 'JSON DEFAULT NULL' },
     ];
 
     for (const { table, column, def } of migrations) {
