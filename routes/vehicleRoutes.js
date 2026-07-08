@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const vehicleController = require('../controllers/vehicleController');
+const vehicleDocumentsController = require('../controllers/vehicleDocumentsController');
 const authMiddleware = require('../middlewares/authMiddleware');
 const multer = require('multer');
 const fs = require('fs');
@@ -17,7 +18,7 @@ if (!fs.existsSync(absoluteUploadDir)) {
 
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
-        cb(null, absoluteUploadDir); 
+        cb(null, absoluteUploadDir);
     },
     filename: function (req, file, cb) {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -26,7 +27,7 @@ const storage = multer.diskStorage({
     }
 });
 
-// --- FILE FILTER: apenas imagens para foto do veículo ---
+// --- CORREÇÃO DE SEGURANÇA: FILE FILTER RIGOROSO PARA IMAGENS ---
 const fileFilter = (req, file, cb) => {
     const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp'];
     if (allowedMimeTypes.includes(file.mimetype)) {
@@ -42,30 +43,36 @@ const upload = multer({
     limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-// --- Multer para documentos do veículo (PDF + imagens, até 20 MB) ---
+// Multer para documentos (PDF + imagens)
 const docStorage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        const docDir = path.join(absoluteUploadDir, 'docs');
-        if (!fs.existsSync(docDir)) fs.mkdirSync(docDir, { recursive: true });
-        cb(null, docDir);
-    },
-    filename: function (req, file, cb) {
+    destination: (req, file, cb) => cb(null, absoluteUploadDir),
+    filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
         const ext = path.extname(file.originalname);
-        cb(null, `vdoc-${uniqueSuffix}${ext}`);
+        cb(null, 'doc-' + uniqueSuffix + ext);
     }
 });
 
 const docFileFilter = (req, file, cb) => {
     const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
-    if (allowed.includes(file.mimetype)) cb(null, true);
-    else cb(new Error('Apenas PDF e imagens são permitidos para documentos.'), false);
+    if (allowed.includes(file.mimetype)) {
+        cb(null, true);
+    } else {
+        cb(new Error('Apenas PDF e imagens são permitidos.'), false);
+    }
 };
 
-const uploadDoc = multer({ storage: docStorage, fileFilter: docFileFilter, limits: { fileSize: 20 * 1024 * 1024 } });
+const uploadDoc = multer({
+    storage: docStorage,
+    fileFilter: docFileFilter,
+    limits: { fileSize: 20 * 1024 * 1024 }
+});
 
 // --- Rotas ---
 router.use(authMiddleware);
+
+// Documentos das obras do operador logado (deve vir ANTES de '/:id' para não ser capturada por ele)
+router.get('/meus-documentos', vehicleDocumentsController.listMyObraDocuments);
 
 // Rotas CRUD padrão
 router.get('/', vehicleController.getAllVehicles);
@@ -77,16 +84,11 @@ router.delete('/:id', vehicleController.deleteVehicle);
 // --- Rota de Upload de Imagem ---
 // O frontend chamará esta rota *após* criar/salvar o veículo
 router.post(
-    '/:id/upload-image', 
+    '/:id/upload-image',
     upload.single('fotoFile'), // 'fotoFile' deve ser o nome do campo no FormData
     vehicleController.uploadVehicleImage
 );
 
-
-// --- Rotas de Documentos ---
-router.get('/:id/documents', vehicleController.getVehicleDocuments);
-router.post('/:id/documents', uploadDoc.single('docFile'), vehicleController.uploadVehicleDocument);
-router.delete('/:id/documents/:docId', vehicleController.deleteVehicleDocument);
 
 // --- Rotas de Alocação (sem mudança) ---
 router.post('/:id/allocate-obra', vehicleController.allocateToObra);
@@ -96,5 +98,10 @@ router.post('/:id/unassign-operational', vehicleController.unassignFromOperation
 router.post('/:id/start-maintenance', vehicleController.startMaintenance);
 router.post('/:id/end-maintenance', vehicleController.endMaintenance);
 
+
+// --- Rotas de Documentos do Veículo ---
+router.get('/:id/documents', vehicleDocumentsController.listDocuments);
+router.post('/:id/documents', uploadDoc.single('documentFile'), vehicleDocumentsController.uploadDocument);
+router.delete('/:id/documents/:docId', vehicleDocumentsController.deleteDocument);
 
 module.exports = router;

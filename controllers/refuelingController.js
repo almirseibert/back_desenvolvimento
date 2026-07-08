@@ -6,6 +6,8 @@ const { recalcFuelAverage } = require('../utils/recalcFuelAverage');
 const { vehicleGroups } = require('../utils/vehicleRules');
 const { notifyComboioEntrada } = require('../services/orderNotifier');
 const fuelCredits = require('../utils/partnerFuelCredits');
+const { dispatchAsync, insertLog } = require('../services/notificationDispatcher');
+const { sendEmail } = require('../services/emailService');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
@@ -769,6 +771,77 @@ const updateRefuelingOrder = async (req, res) => {
     }
 };
 
+// Limiares de alerta de combustível (%). Só notifica na primeira vez que cruza cada limiar.
+const FUEL_PCT_THRESHOLDS = [50, 75, 90, 100];
+
+const checkObraFuelPercent = async (obraId) => {
+    const [[obra]] = await db.query(
+        'SELECT nome, valorTotalContrato, responsavel_email FROM obras WHERE id = ?',
+        [obraId]
+    );
+    if (!obra) return;
+
+    const contrato = parseFloat(obra.valorTotalContrato) || 0;
+    if (contrato <= 0) return;
+
+    // Soma o custo total dos abastecimentos concluídos vinculados a esta obra
+    const [[gastoRow]] = await db.query(
+        `SELECT COALESCE(SUM(
+            (COALESCE(litrosAbastecidos, 0) * COALESCE(pricePerLiter, 0)) +
+            (COALESCE(litrosAbastecidosArla, 0) * COALESCE(pricePerLiterArla, 0)) +
+            COALESCE(outrosValor, 0)
+         ), 0) AS totalGasto
+         FROM refuelings
+         WHERE obraId = ? AND status = 'Concluída'`,
+        [obraId]
+    );
+    const totalGasto = parseFloat(gastoRow.totalGasto) || 0;
+    const pctAtual = (totalGasto / contrato) * 100;
+
+    for (const limiar of FUEL_PCT_THRESHOLDS) {
+        if (pctAtual < limiar) break; // limiares em ordem crescente, para de verificar
+
+        // Checa se já enviamos notificação para este limiar nesta obra
+        const [[logRow]] = await db.query(
+            `SELECT id FROM notification_log
+             WHERE event_type = 'combustivel_obra_20pct'
+               AND obra_id = ?
+               AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.pct')) = ?
+             LIMIT 1`,
+            [obraId, String(limiar)]
+        );
+        if (logRow) continue; // já notificado
+
+        const payload = {
+            obra: obra.nome,
+            pct: limiar,
+            gastoAtual: totalGasto.toFixed(2),
+            orcamento: contrato.toFixed(2),
+            obraId,
+        };
+
+        // Disparo via notification_targets configurados no admin
+        dispatchAsync('combustivel_obra_20pct', payload, { obraId });
+
+        // Envio direto ao responsável da obra (se tiver email configurado)
+        if (obra.responsavel_email) {
+            const subject = `Combustível da obra ${obra.nome} a ${limiar}% do orçamento`;
+            const body = `⚠️ A obra *${obra.nome}* atingiu ${limiar}% do orçamento de combustível.\n\nGasto atual: R$ ${totalGasto.toFixed(2)} / R$ ${contrato.toFixed(2)}`;
+            try {
+                await sendEmail({
+                    to: obra.responsavel_email,
+                    subject,
+                    text: body,
+                    html: body.replace(/\n/g, '<br/>'),
+                });
+                insertLog({ event_type: 'combustivel_obra_20pct', channel: 'email', contact: obra.responsavel_email, obra_id: obraId, status: 'sent', payload_json: payload });
+            } catch (e) {
+                insertLog({ event_type: 'combustivel_obra_20pct', channel: 'email', contact: obra.responsavel_email, obra_id: obraId, status: 'failed', error_msg: e.message, payload_json: payload });
+            }
+        }
+    }
+};
+
 const confirmRefuelingOrder = async (req, res) => {
     const { id } = req.params;
     const {
@@ -902,6 +975,13 @@ const confirmRefuelingOrder = async (req, res) => {
         await connection.commit();
         req.io.emit('server:sync', { targets: ['refuelings', 'vehicles', 'expenses', 'partners', 'solicitacoes', 'partner_fuel_credits'] });
         res.json({ message: 'Abastecimento confirmado com sucesso.' });
+
+        // Verifica percentual de combustível da obra após confirmar (fire-and-forget)
+        if (order.obraId) {
+            setImmediate(() => checkObraFuelPercent(order.obraId).catch(e =>
+                console.warn('[fuelPct] erro:', e.message)
+            ));
+        }
 
     } catch (error) {
         await connection.rollback();

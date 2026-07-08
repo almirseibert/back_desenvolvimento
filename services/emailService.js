@@ -4,7 +4,32 @@
 // Admin → Configurações → E-mail.
 
 const nodemailer = require('nodemailer');
+const { randomUUID } = require('crypto');
 const db = require('../database');
+
+// Registra cada tentativa de envio em email_log (auditoria).
+// Nunca lança — falha de log não deve quebrar o envio.
+const logEmail = async ({ to, subject, body, tipo, status, erro, messageId, enviadoPor }) => {
+    try {
+        await db.query(
+            `INSERT INTO email_log (id, para, assunto, corpo, tipo, status, erro, message_id, enviado_por)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                randomUUID(),
+                String(to).slice(0, 255),
+                subject ? String(subject).slice(0, 255) : null,
+                body || null,
+                tipo || null,
+                status,
+                erro ? String(erro).slice(0, 1000) : null,
+                messageId || null,
+                enviadoPor || null,
+            ]
+        );
+    } catch (e) {
+        console.warn('⚠️ [emailService] falha ao gravar email_log:', e.message);
+    }
+};
 
 const getEmailConfig = async () => {
     const [rows] = await db.query("SELECT value FROM admin_settings WHERE setting_key = 'email_config'");
@@ -34,12 +59,14 @@ const buildTransporter = (config) => {
     });
 };
 
-const sendEmail = async ({ to, subject, text, html, attachments }) => {
+const sendEmail = async ({ to, subject, text, html, attachments, tipo, enviadoPor }) => {
     if (!to) throw new Error('Destinatário (to) obrigatório.');
+    const body = text || html || null;
     const config = await getEmailConfig();
     if (!config || !config.host || !config.user) {
         const msg = 'SMTP não configurado em Admin → Configurações.';
         console.warn(`[emailService] ${msg} — destino: ${to}`);
+        await logEmail({ to, subject, body, tipo, status: 'skipped', erro: msg, enviadoPor });
         return { skipped: true, reason: msg };
     }
 
@@ -51,8 +78,14 @@ const sendEmail = async ({ to, subject, text, html, attachments }) => {
     }
 
     const from = `"${config.fromName || 'MAK Frotas'}" <${config.fromAddress || config.user}>`;
-    const info = await cachedTransporter.sendMail({ from, to, subject, text, html, attachments });
-    return { messageId: info.messageId };
+    try {
+        const info = await cachedTransporter.sendMail({ from, to, subject, text, html, attachments });
+        await logEmail({ to, subject, body, tipo, status: 'sent', messageId: info.messageId, enviadoPor });
+        return { messageId: info.messageId };
+    } catch (err) {
+        await logEmail({ to, subject, body, tipo, status: 'failed', erro: err.message, enviadoPor });
+        throw err;
+    }
 };
 
 module.exports = { sendEmail };

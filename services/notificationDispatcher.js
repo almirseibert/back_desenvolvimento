@@ -10,10 +10,28 @@
 // estiver no catálogo, usa um template genérico baseado em JSON.stringify.
 
 const db = require('../database');
+const { randomUUID } = require('crypto');
 const whatsappService = require('./whatsappService');
 const { sendEmail } = require('./emailService');
 const { renderBody } = require('./notificationEvents');
 const pushService = require('./pushService');
+
+const insertLog = (entry) => {
+    db.query(
+        `INSERT INTO notification_log (id, event_type, channel, contact, obra_id, status, error_msg, payload_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            randomUUID(),
+            entry.event_type,
+            entry.channel,
+            entry.contact,
+            entry.obra_id || null,
+            entry.status,
+            entry.error_msg || null,
+            entry.payload_json ? JSON.stringify(entry.payload_json) : null,
+        ]
+    ).catch(err => console.warn('[notif:log] falha ao registrar log:', err.message));
+};
 
 const fmtDate = (d) => {
     if (!d) return '—';
@@ -143,6 +161,12 @@ const resolveTargets = async (targets) => {
                 resolved.push({ channel: 'whatsapp', contact: t.target_value, name: t.label || 'Destino avulso' });
             } else if (t.target_type === 'email_address' && t.channel === 'email') {
                 resolved.push({ channel: 'email', contact: t.target_value, name: t.label || 'Destino avulso' });
+            } else if (t.target_type === 'internal_contact') {
+                const [rows] = await db.query('SELECT nome, whatsapp, email FROM internal_contacts WHERE id = ? AND ativo = 1', [t.target_value]);
+                const c = rows[0];
+                if (!c) continue;
+                if (t.channel === 'whatsapp' && c.whatsapp) resolved.push({ channel: 'whatsapp', contact: c.whatsapp, name: c.nome });
+                if (t.channel === 'email'    && c.email)    resolved.push({ channel: 'email',    contact: c.email,    name: c.nome });
             } else if (t.target_type === 'employee') {
                 const [rows] = await db.query('SELECT nome, contato, email FROM employees WHERE id = ?', [t.target_value]);
                 const emp = rows[0];
@@ -174,12 +198,14 @@ const resolveTargets = async (targets) => {
 
 // ─── Despacho principal ───────────────────────────────────────────────────────
 const dispatch = async (eventType, payload = {}, opts = {}) => {
+    const obraId = payload.obraId || opts.obraId || null;
+    const extraContacts = opts.extraContacts || [];
     try {
         const [targets] = await db.query(
             'SELECT * FROM notification_targets WHERE event_type = ? AND active = 1',
             [eventType]
         );
-        if (!targets || targets.length === 0) {
+        if ((!targets || targets.length === 0) && extraContacts.length === 0) {
             return { dispatched: 0, skipped: 0, reason: 'no_targets' };
         }
 
@@ -199,7 +225,7 @@ const dispatch = async (eventType, payload = {}, opts = {}) => {
             ]).catch((err) => console.warn(`[notif:${eventType}] push:`, err.message));
         }
 
-        const resolved = await resolveTargets(targets);
+        const resolved = [...(await resolveTargets(targets)), ...extraContacts];
 
         // Deduplica por (channel + contact) para não enviar 2x ao mesmo destino
         const seen = new Set();
@@ -223,6 +249,7 @@ const dispatch = async (eventType, payload = {}, opts = {}) => {
                         opts.anexoUrl || anexoUrl || null
                     );
                     dispatched++;
+                    insertLog({ event_type: eventType, channel: 'whatsapp', contact: r.contact, obra_id: obraId, status: 'sent', payload_json: payload });
                 } else if (r.channel === 'email') {
                     await sendEmail({
                         to: r.contact,
@@ -232,9 +259,11 @@ const dispatch = async (eventType, payload = {}, opts = {}) => {
                         attachments: opts.attachments || (anexoUrl ? [{ path: anexoUrl }] : undefined),
                     });
                     dispatched++;
+                    insertLog({ event_type: eventType, channel: 'email', contact: r.contact, obra_id: obraId, status: 'sent', payload_json: payload });
                 }
             } catch (err) {
                 errors.push({ channel: r.channel, contact: r.contact, error: err.message });
+                insertLog({ event_type: eventType, channel: r.channel, contact: r.contact, obra_id: obraId, status: 'failed', error_msg: err.message, payload_json: payload });
             }
         }));
 
@@ -255,4 +284,4 @@ const dispatchAsync = (eventType, payload, opts) => {
     });
 };
 
-module.exports = { dispatch, dispatchAsync, TEMPLATES };
+module.exports = { dispatch, dispatchAsync, insertLog, TEMPLATES };

@@ -56,6 +56,17 @@ const http = require('http');
         { table: 'refuelings',             column: 'reserved_amount',                  def: 'DECIMAL(12,2) DEFAULT NULL' },
         { table: 'refuelings',             column: 'reserved_price',                   def: 'DECIMAL(8,3) DEFAULT NULL' },
         { table: 'refuelings',             column: 'is_full_tank',                     def: 'TINYINT(1) DEFAULT 0' },
+        // ── Módulo de Planejamento de Obras (pré-obra) ──
+        // Ciclo de vida: radar → planejada → mobilizacao → ativa → finalizada.
+        // 'dataFimPrevisto' já existia no schema (órfã) e foi adotada; aqui só o par de início.
+        { table: 'obras',                  column: 'dataInicioPrevisto',               def: 'DATE DEFAULT NULL' },
+        { table: 'obras',                  column: 'origemInfo',                       def: 'VARCHAR(255) DEFAULT NULL' },
+        { table: 'obras',                  column: 'confiancaInfo',                    def: "ENUM('rumor','plano_oficial','contrato_assinado') DEFAULT NULL" },
+        { table: 'obras',                  column: 'obsPlanejamento',                  def: 'TEXT DEFAULT NULL' },
+        // Plano de trabalho por SUBGRUPO (vehicles.sub_tipo) — contratos diferenciam
+        // ex. Escavadeira 13t vs 26t. Campos antigos (…PorTipo) seguem como fallback.
+        { table: 'obras',                  column: 'horasContratadasPorSubTipo',       def: 'JSON DEFAULT NULL' },
+        { table: 'obras',                  column: 'valoresPorSubTipo',                def: 'JSON DEFAULT NULL' },
     ];
 
     for (const { table, column, def } of migrations) {
@@ -415,6 +426,15 @@ const http = require('http');
             )
         `);
         console.log('✅ notification_targets: tabela ok.');
+
+        // Adiciona 'internal_contact' ao enum de target_type (idempotente).
+        try {
+            await db.query(
+                "ALTER TABLE notification_targets MODIFY COLUMN target_type ENUM('user','role','employee','phone','email_address','internal_contact') NOT NULL"
+            );
+        } catch (alterErr) {
+            console.warn('⚠️ [migration] enum internal_contact em notification_targets:', alterErr.message);
+        }
     } catch (e) {
         console.warn('⚠️ [migration] notification_targets:', e.message);
     }
@@ -639,6 +659,164 @@ const http = require('http');
 })();
 
 // ====================================================================
+// MIGRAÇÃO — Documentos dos Veículos (CRLV, PDFs, etc.)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS vehicle_documents (
+                id          VARCHAR(36)  PRIMARY KEY,
+                vehicle_id  VARCHAR(36)  NOT NULL,
+                nome        VARCHAR(255) NOT NULL,
+                tipo        VARCHAR(100) DEFAULT 'Outro',
+                url         VARCHAR(500) NOT NULL,
+                tamanho     INT          DEFAULT NULL,
+                uploaded_by VARCHAR(36)  DEFAULT NULL,
+                created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_vdoc_vehicle (vehicle_id),
+                FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
+            )
+        `);
+        // Correção: uploaded_by deve casar com users.id (VARCHAR(36) UUID), não INT.
+        // Sem isso o INSERT de req.user.id (UUID) estoura "Data truncated for column 'uploaded_by'" → 500.
+        try {
+            await db.query(`ALTER TABLE vehicle_documents
+                MODIFY COLUMN uploaded_by VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL`);
+        } catch (e2) {
+            console.warn('⚠️ [migration] vehicle_documents.uploaded_by:', e2.message);
+        }
+        console.log('✅ Migração vehicle_documents concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] vehicle_documents:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Log de e-mails enviados pelo sistema (auditoria de envios)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS email_log (
+                id          VARCHAR(36)  PRIMARY KEY,
+                para        VARCHAR(255) NOT NULL,
+                assunto     VARCHAR(255) DEFAULT NULL,
+                corpo       LONGTEXT     DEFAULT NULL,
+                tipo        VARCHAR(60)  DEFAULT NULL,
+                status      VARCHAR(20)  NOT NULL DEFAULT 'sent',
+                erro        TEXT         DEFAULT NULL,
+                message_id  VARCHAR(255) DEFAULT NULL,
+                enviado_por VARCHAR(36)  DEFAULT NULL,
+                created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_email_log_created (created_at),
+                INDEX idx_email_log_status  (status)
+            )
+        `);
+        console.log('✅ Migração email_log concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] email_log:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Sugestões dos usuários (Administração → Comunicação)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS suggestions (
+                id          VARCHAR(36)  PRIMARY KEY,
+                user_id     VARCHAR(36)  DEFAULT NULL,
+                user_nome   VARCHAR(150) DEFAULT NULL,
+                texto       TEXT         NOT NULL,
+                anexos      JSON         DEFAULT NULL,
+                status      VARCHAR(20)  NOT NULL DEFAULT 'nova',
+                created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_suggestions_status  (status),
+                INDEX idx_suggestions_created (created_at)
+            )
+        `);
+        console.log('✅ Migração suggestions concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] suggestions:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — Vínculos entre veículos (cavalo↔reboque, máquina↔acessório)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS vehicle_links (
+                id                VARCHAR(36) PRIMARY KEY,
+                parent_vehicle_id VARCHAR(36) NOT NULL,
+                child_vehicle_id  VARCHAR(36) NOT NULL,
+                tipo_vinculo      VARCHAR(60) DEFAULT NULL,
+                observacao        VARCHAR(255) DEFAULT NULL,
+                ativo             TINYINT     NOT NULL DEFAULT 1,
+                created_at        TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+                data_fim          DATETIME    DEFAULT NULL,
+                INDEX idx_vlink_parent (parent_vehicle_id),
+                INDEX idx_vlink_child  (child_vehicle_id)
+            )
+        `);
+        console.log('✅ Migração vehicle_links concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] vehicle_links:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — responsavel_email em obras (Item 4: responsável notificável)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`ALTER TABLE obras ADD COLUMN IF NOT EXISTS responsavel_email VARCHAR(255) DEFAULT NULL`);
+        console.log('✅ Migração obras.responsavel_email concluída.');
+    } catch (e) {
+        if (e.code === 'ER_PARSE_ERROR') {
+            // MySQL < 8.0.29: sem suporte a IF NOT EXISTS em ADD COLUMN
+            try {
+                await db.query(`ALTER TABLE obras ADD COLUMN responsavel_email VARCHAR(255) DEFAULT NULL`);
+                console.log('✅ Migração obras.responsavel_email concluída (fallback).');
+            } catch (e2) {
+                if (e2.code !== 'ER_DUP_FIELDNAME') console.warn('⚠️ [migration] obras.responsavel_email:', e2.message);
+            }
+        } else if (e.code !== 'ER_DUP_FIELDNAME') {
+            console.warn('⚠️ [migration] obras.responsavel_email:', e.message);
+        }
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — notification_log (Item 3: histórico de notificações enviadas)
+// ====================================================================
+(async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS notification_log (
+                id           VARCHAR(36)  PRIMARY KEY,
+                event_type   VARCHAR(100) NOT NULL,
+                channel      VARCHAR(30)  NOT NULL,
+                contact      VARCHAR(255) NOT NULL,
+                obra_id      VARCHAR(36)  DEFAULT NULL,
+                status       ENUM('sent','failed','skipped') NOT NULL DEFAULT 'sent',
+                error_msg    TEXT         DEFAULT NULL,
+                payload_json TEXT         DEFAULT NULL,
+                created_at   TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_nlog_event   (event_type),
+                INDEX idx_nlog_obra    (obra_id),
+                INDEX idx_nlog_created (created_at)
+            )
+        `);
+        console.log('✅ Migração notification_log concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] notification_log:', e.message);
+    }
+})();
+
+// ====================================================================
 // MIGRAÇÃO — Saldo pré-pago em postos (partner_fuel_credit_entries + VIEW)
 // ====================================================================
 // Modelo append-only: cada movimentação (crédito, empenho, liberação de
@@ -703,31 +881,6 @@ const http = require('http');
         console.log('✅ Migração partner_fuel_credit_entries + v_partner_fuel_balance concluída.');
     } catch (e) {
         console.warn('⚠️ [migration] partner_fuel_credit_entries:', e.message);
-    }
-})();
-
-// ====================================================================
-// MIGRAÇÃO — Documentos de veículos (CRLV, AET, Tacógrafo, Notas etc.)
-// ====================================================================
-(async () => {
-    try {
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS vehicle_documents (
-                id            VARCHAR(36)  PRIMARY KEY,
-                vehicle_id    VARCHAR(36)  NOT NULL,
-                tipo          VARCHAR(60)  NOT NULL DEFAULT 'Outros',
-                descricao     VARCHAR(255) DEFAULT NULL,
-                nome_original VARCHAR(255) NOT NULL,
-                filepath      VARCHAR(500) NOT NULL,
-                url           VARCHAR(500) NOT NULL,
-                created_at    TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_vdoc_vehicle (vehicle_id),
-                FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
-            )
-        `);
-        console.log('✅ Migração vehicle_documents concluída.');
-    } catch (e) {
-        console.warn('⚠️ [migration] vehicle_documents:', e.message);
     }
 })();
 
@@ -898,6 +1051,10 @@ const sigasulRoutes = require('./routes/sigasulRoutes');
 const vehicleTypeConfigRoutes = require('./routes/vehicleTypeConfigRoutes');
 const vehicleTaxonomyRoutes = require('./routes/vehicleTaxonomyRoutes');
 const partnerFuelCreditsRoutes = require('./routes/partnerFuelCreditsRoutes');
+const notificationLogRoutes    = require('./routes/notificationLogRoutes');
+const suggestionRoutes         = require('./routes/suggestionRoutes');
+const vehicleLinkRoutes        = require('./routes/vehicleLinkRoutes');
+const comboioReportRoutes      = require('./routes/comboioReportRoutes');
 
 // ====================================================================
 // CONFIGURAÇÃO DO HTTP SERVER E SOCKET.IO
@@ -1017,6 +1174,10 @@ apiRouter.use('/sigasul', sigasulRoutes);
 apiRouter.use('/vehicle-type-configs', vehicleTypeConfigRoutes);
 apiRouter.use('/vehicle-taxonomy', vehicleTaxonomyRoutes);
 apiRouter.use('/partnerFuelCredits', partnerFuelCreditsRoutes);
+apiRouter.use('/notification-log', notificationLogRoutes);
+apiRouter.use('/suggestions', suggestionRoutes);
+apiRouter.use('/vehicle-links', vehicleLinkRoutes);
+apiRouter.use('/comboio-report', comboioReportRoutes);
 
 // ─── WEBHOOK PÚBLICO DO CHATBOT ─────────────────────────────────────────────
 // Deve ficar ANTES de app.use('/api', apiRouter) para não passar pelo authMiddleware

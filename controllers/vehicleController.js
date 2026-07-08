@@ -50,6 +50,31 @@ const getAllVehicles = async (req, res) => {
         `;
         const [rows] = await db.execute(query);
         const vehicles = rows.map(parseVehicleJsonFields);
+
+        // Vínculos ativos (reboque/acessório atrelado a um veículo principal).
+        // Uma query auxiliar + mapas em JS — evita JSON_ARRAYAGG e é O(V + L).
+        const [links] = await db.execute(
+            'SELECT id, parent_vehicle_id, child_vehicle_id, tipo_vinculo FROM vehicle_links WHERE ativo = 1'
+        );
+        const childToParent = new Map();   // childId → { linkId, parentId, tipo_vinculo }
+        const parentToChildren = new Map(); // parentId → [{ linkId, id, tipo_vinculo }]
+        for (const l of links) {
+            childToParent.set(l.child_vehicle_id, {
+                linkId: l.id, parentId: l.parent_vehicle_id, tipo_vinculo: l.tipo_vinculo,
+            });
+            if (!parentToChildren.has(l.parent_vehicle_id)) parentToChildren.set(l.parent_vehicle_id, []);
+            parentToChildren.get(l.parent_vehicle_id).push({
+                linkId: l.id, id: l.child_vehicle_id, tipo_vinculo: l.tipo_vinculo,
+            });
+        }
+        for (const v of vehicles) {
+            const parent = childToParent.get(v.id);
+            v.linkedParentId  = parent ? parent.parentId : null;
+            v.linkId          = parent ? parent.linkId : null;
+            v.linkVinculoTipo = parent ? parent.tipo_vinculo : null;
+            v.linkedChildren  = parentToChildren.get(v.id) || [];
+        }
+
         res.json(vehicles);
     } catch (error) {
         console.error('Erro ao buscar veículos:', error);
@@ -288,7 +313,7 @@ const allocateToObra = async (req, res) => {
         const employeeIdStr = String(employeeId);
         const readingVal = parseFloat(readingValue) || 0;
 
-        const [obraRows] = await connection.execute('SELECT nome FROM obras WHERE id = ?', [obraIdStr]);
+        const [obraRows] = await connection.execute('SELECT nome, status, dataInicio FROM obras WHERE id = ?', [obraIdStr]);
         const [employeeRows] = await connection.execute('SELECT nome FROM employees WHERE id = ?', [employeeIdStr]);
         const [vehicleRows] = await connection.execute('SELECT * FROM vehicles WHERE id = ?', [id]);
 
@@ -377,9 +402,20 @@ const allocateToObra = async (req, res) => {
         const obraHistoryPlaceholders = obraHistoryFields.map(() => '?').join(', '); 
 
         await connection.execute(
-            `INSERT INTO obras_historico_veiculos (${obraHistoryFields.join(', ')}) VALUES (${obraHistoryPlaceholders})`, 
+            `INSERT INTO obras_historico_veiculos (${obraHistoryFields.join(', ')}) VALUES (${obraHistoryPlaceholders})`,
             obraHistoryValues
         );
+
+        // Planejamento: 1ª alocação de equipamento leva a obra para 'mobilizacao'.
+        // A ativação ('ativa') só acontece no 1º lançamento de horas (billingController).
+        // Evento único — remover a alocação não reverte.
+        if (['radar', 'planejada'].includes(obra.status)) {
+            await connection.execute(
+                'UPDATE obras SET status = ? WHERE id = ?',
+                ['mobilizacao', obraIdStr]
+            );
+            console.log(`✅ Obra "${obra.nome}" em mobilização (1ª alocação de equipamento).`);
+        }
 
         // Fase 2.6 — Se for comboio, abre novo período de obra
         // (fecha qualquer anterior automaticamente)
@@ -761,64 +797,6 @@ const endMaintenance = async (req, res) => {
     }
 };
 
-// --- DOCUMENTOS DO VEÍCULO ---
-
-const getVehicleDocuments = async (req, res) => {
-    const { id } = req.params;
-    try {
-        const [rows] = await db.execute(
-            'SELECT * FROM vehicle_documents WHERE vehicle_id = ? ORDER BY created_at DESC',
-            [id]
-        );
-        res.json(rows);
-    } catch (error) {
-        console.error('Erro ao buscar documentos:', error);
-        res.status(500).json({ error: 'Erro ao buscar documentos do veículo.' });
-    }
-};
-
-const uploadVehicleDocument = async (req, res) => {
-    const { id } = req.params;
-    const { tipo, descricao } = req.body;
-    if (!req.file) return res.status(400).json({ error: 'Arquivo obrigatório.' });
-
-    const docId = randomUUID();
-    const fileUrl = `/uploads/docs/${req.file.filename}`;
-
-    try {
-        await db.execute(
-            'INSERT INTO vehicle_documents (id, vehicle_id, tipo, descricao, nome_original, filepath, url) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [docId, id, tipo || 'Outros', descricao || null, req.file.originalname, req.file.path, fileUrl]
-        );
-        const [rows] = await db.execute('SELECT * FROM vehicle_documents WHERE id = ?', [docId]);
-        res.status(201).json(rows[0]);
-    } catch (error) {
-        console.error('Erro ao salvar documento:', error);
-        res.status(500).json({ error: 'Erro ao salvar documento.' });
-    }
-};
-
-const deleteVehicleDocument = async (req, res) => {
-    const { id, docId } = req.params;
-    try {
-        const [rows] = await db.execute(
-            'SELECT * FROM vehicle_documents WHERE id = ? AND vehicle_id = ?',
-            [docId, id]
-        );
-        if (!rows.length) return res.status(404).json({ error: 'Documento não encontrado.' });
-
-        const doc = rows[0];
-        if (doc.filepath && fs.existsSync(doc.filepath)) {
-            fs.unlinkSync(doc.filepath);
-        }
-        await db.execute('DELETE FROM vehicle_documents WHERE id = ?', [docId]);
-        res.status(204).end();
-    } catch (error) {
-        console.error('Erro ao excluir documento:', error);
-        res.status(500).json({ error: 'Erro ao excluir documento.' });
-    }
-};
-
 module.exports = {
     getAllVehicles,
     getVehicleById,
@@ -832,7 +810,4 @@ module.exports = {
     unassignFromOperational,
     startMaintenance,
     endMaintenance,
-    getVehicleDocuments,
-    uploadVehicleDocument,
-    deleteVehicleDocument,
 };

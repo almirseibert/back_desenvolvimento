@@ -7,6 +7,8 @@ router.use(authMiddleware); // Protegendo todas as rotas de obras
 
 // Rotas CRUD padrão
 router.get('/', obraController.getAllObras);
+// Painel de planejamento estratégico — precisa vir antes de '/:id'
+router.get('/planejamento', require('../controllers/planejamentoController').getPlanejamento);
 router.get('/:id', obraController.getObraById);
 router.post('/', obraController.createObra);
 router.put('/:id', obraController.updateObra);

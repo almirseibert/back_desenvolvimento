@@ -68,6 +68,25 @@ const getDailyLogs = async (req, res) => {
     }
 };
 
+// Planejamento: o 1º lançamento de horas ativa a obra (radar/planejada/mobilizacao → ativa).
+// Evento único — apagar o lançamento não reverte o status.
+const activateObraOnFirstLog = async (obraId, date, io) => {
+    try {
+        const [rows] = await db.query('SELECT nome, status FROM obras WHERE id = ?', [obraId]);
+        const obra = rows[0];
+        if (obra && ['radar', 'planejada', 'mobilizacao'].includes(obra.status)) {
+            await db.execute(
+                'UPDATE obras SET status = ?, dataInicio = COALESCE(dataInicio, ?) WHERE id = ?',
+                ['ativa', date, obraId]
+            );
+            if (io) io.emit('server:sync', { targets: ['obras'] });
+            console.log(`✅ Obra "${obra.nome}" ativada automaticamente (1º lançamento de horas).`);
+        }
+    } catch (e) {
+        console.warn('⚠️ [planejamento] Falha ao ativar obra no 1º lançamento:', e.message);
+    }
+};
+
 const upsertDailyLog = async (req, res) => {
     const data = req.body;
     
@@ -109,6 +128,7 @@ const upsertDailyLog = async (req, res) => {
                 targetId
             ]);
             
+            await activateObraOnFirstLog(data.obraId, data.date, req.io);
             if (req.io) req.io.emit('server:sync', { targets: ['dailyWorkLogs'] });
             res.json({ message: 'Registro atualizado.', id: targetId });
         } else {
@@ -129,6 +149,7 @@ const upsertDailyLog = async (req, res) => {
                 totalHours || 0, observation || null, justificativaTipo || null
             ]);
             
+            await activateObraOnFirstLog(obraId, date, req.io);
             if (req.io) req.io.emit('server:sync', { targets: ['dailyWorkLogs'] });
             res.status(201).json({ message: 'Registro criado.', id: newId });
         }
