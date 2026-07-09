@@ -52,3 +52,12 @@ tmp/
 # Arquivos sensíveis
 credentials.json
 secrets.json
+
+# Sessão WhatsApp Business (tokens de sessão ativa)
+whatsapp/.wwebjs_auth/
+whatsapp/.wwebjs_cache/
+# Biblioteca vendorizada whatsapp-web.js (não é código próprio)
+whatsapp/
+
+# Saída da ferramenta graphify (pode conter dados sensíveis do corpus)
+graphify-out/
