@@ -573,8 +573,372 @@ const deallocateFromObra = async (req, res) => {
     }
 };
 
+// --- ESTADIA RETROATIVA (split da alocação atual) ---
+// Registra uma passagem passada por outra obra (Obra B) sem tirar o veículo
+// da obra atual (Obra A). Faz o "split": fecha a A na saída p/ B, insere a
+// estadia fechada em B, e reabre um novo período da A a partir da volta.
+// Comboio está fora de escopo (não mexe em comboio_periodos_obra).
+const registrarEstadiaRetroativa = async (req, res) => {
+    const { id } = req.params;
+    const {
+        obraId,            // Obra B (destino da estadia retroativa)
+        employeeId,        // operador da estadia B (obrigatório)
+        dataEntrada,       // entrada em B / saída da A
+        dataSaida,         // saída de B / volta para A
+        readingType,       // 'odometro' | 'horimetro'
+        leituraPartida,    // leitura ao sair da A (= entrada em B)
+        leituraVolta,      // leitura ao sair de B (= volta para A)
+        observacoes,
+        substituirConflitos = false // se true, apara/divide períodos antigos sobrepostos
+    } = req.body;
+
+    if (!obraId || !employeeId || !dataEntrada || !dataSaida) {
+        return res.status(400).json({ error: 'Obra, operador, data de entrada e data de saída são obrigatórios.' });
+    }
+    if (readingType !== 'odometro' && readingType !== 'horimetro') {
+        return res.status(400).json({ error: "readingType deve ser 'odometro' ou 'horimetro'." });
+    }
+
+    const entradaB = new Date(dataEntrada);
+    const saidaB = new Date(dataSaida);
+    if (isNaN(entradaB.getTime()) || isNaN(saidaB.getTime())) {
+        return res.status(400).json({ error: 'Datas inválidas.' });
+    }
+    if (entradaB >= saidaB) {
+        return res.status(400).json({ error: 'A data de entrada em B deve ser anterior à data de saída.' });
+    }
+    if (saidaB > new Date()) {
+        return res.status(400).json({ error: 'A data de saída não pode estar no futuro.' });
+    }
+
+    const partida = parseFloat(leituraPartida) || 0;
+    const volta = parseFloat(leituraVolta) || 0;
+    if (volta < partida) {
+        return res.status(400).json({ error: 'A leitura de volta não pode ser menor que a de partida.' });
+    }
+
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+        const obraBIdStr = String(obraId);
+        const employeeBIdStr = String(employeeId);
+
+        const [obraRows] = await connection.execute('SELECT nome FROM obras WHERE id = ?', [obraBIdStr]);
+        const [employeeRows] = await connection.execute('SELECT nome FROM employees WHERE id = ?', [employeeBIdStr]);
+        const [vehicleRows] = await connection.execute('SELECT * FROM vehicles WHERE id = ?', [id]);
+
+        const obraB = obraRows[0];
+        const employeeB = employeeRows[0];
+        const vehicle = vehicleRows[0];
+
+        if (!obraB || !employeeB || !vehicle) {
+            throw new Error('Obra, Funcionário ou Veículo não encontrado (ID inválido).');
+        }
+
+        // Período ABERTO atual da obra (Obra A), se houver — é o que será fatiado.
+        // Se o veículo está DISPONÍVEL (sem obra vigente), não há split: apenas
+        // inserimos a estadia fechada na Obra B, sem tocar no estado atual.
+        const [openHistRows] = await connection.execute(
+            'SELECT * FROM vehicle_history WHERE vehicleId = ? AND historyType = ? AND endDate IS NULL ORDER BY startDate DESC LIMIT 1',
+            [id, 'obra']
+        );
+        const openHist = (openHistRows && openHistRows.length > 0) ? openHistRows[0] : null;
+        const openDetails = openHist ? (parseJsonSafe(openHist.details, 'history.details') || {}) : {};
+        const obraAId = openHist
+            ? (openDetails.obraId ? String(openDetails.obraId) : (vehicle.obraAtualId ? String(vehicle.obraAtualId) : null))
+            : null;
+
+        if (openHist) {
+            // Split só é válido se a estadia couber dentro do período aberto da A.
+            if (entradaB < new Date(openHist.startDate)) {
+                throw new Error('A entrada na obra da estadia é anterior ao início da alocação atual. Verifique as datas.');
+            }
+            if (String(obraAId) === obraBIdStr) {
+                throw new Error('A obra da estadia retroativa é a mesma da alocação atual.');
+            }
+        }
+
+        const entradaKey = `${readingType}Entrada`;
+        const saidaKey = `${readingType}Saida`;
+        const readColEntrada = readingType === 'odometro' ? 'odometroEntrada' : 'horimetroEntrada';
+        const readColSaida = readingType === 'odometro' ? 'odometroSaida' : 'horimetroSaida';
+
+        // --- DETECÇÃO DE SOBREPOSIÇÃO ---
+        // Procura períodos de obra da mesma máquina que colidam com [entradaB, saidaB].
+        // Exclui o período aberto atual (openHist) — ele é tratado via split, não é conflito.
+        // Regra de sobreposição: início < saidaB E (fim IS NULL OU fim > entradaB).
+        const excludeId = openHist ? openHist.id : null;
+        const conflictSql = `
+            SELECT * FROM vehicle_history
+            WHERE vehicleId = ? AND historyType = 'obra'
+              AND startDate < ? AND (endDate IS NULL OR endDate > ?)
+              ${excludeId ? 'AND id <> ?' : ''}
+            ORDER BY startDate ASC`;
+        const conflictParams = excludeId ? [id, saidaB, entradaB, excludeId] : [id, saidaB, entradaB];
+        const [conflictRows] = await connection.execute(conflictSql, conflictParams);
+
+        if (conflictRows.length > 0 && !substituirConflitos) {
+            // Não commita: devolve os conflitos para o frontend avisar o usuário.
+            await connection.rollback();
+            const conflicts = conflictRows.map(r => {
+                const d = parseJsonSafe(r.details, 'history.details') || {};
+                return {
+                    obraId: d.obraId || null,
+                    obraNome: d.obraNome || 'Obra não identificada',
+                    dataEntrada: r.startDate,
+                    dataSaida: r.endDate, // null = ainda aberto (obra atual)
+                    aberto: !r.endDate
+                };
+            });
+            return res.status(409).json({
+                error: 'A máquina já possui registro em obra no período informado.',
+                code: 'PERIODO_SOBREPOSTO',
+                conflicts
+            });
+        }
+
+        // --- RESOLUÇÃO DE SOBREPOSIÇÃO (substituirConflitos = true) ---
+        // "Só os dias em conflito": o novo período vence nos dias sobrepostos;
+        // o período antigo é aparado/dividido e os dias fora da sobreposição
+        // são preservados. A leitura no ponto de corte é a da estadia (partida/volta).
+        for (const p of conflictRows) {
+            const Ps = new Date(p.startDate);
+            const Pe = p.endDate ? new Date(p.endDate) : null; // null = aberto
+            const coversStart = entradaB <= Ps;
+            const coversEnd = Pe ? (saidaB >= Pe) : false; // aberto nunca é "coberto no fim"
+            const pDetails = parseJsonSafe(p.details, 'history.details') || {};
+            const pObraId = pDetails.obraId ? String(pDetails.obraId) : null;
+
+            if (coversStart && coversEnd) {
+                // Antigo inteiramente contido no novo → remove.
+                await connection.execute('DELETE FROM vehicle_history WHERE id = ?', [p.id]);
+                if (pObraId) {
+                    await connection.execute(
+                        'DELETE FROM obras_historico_veiculos WHERE veiculoId = ? AND obraId = ? AND dataEntrada = ?',
+                        [id, pObraId, p.startDate]
+                    );
+                }
+            } else if (coversStart && !coversEnd) {
+                // Novo cobre o início → apara o começo do antigo para saidaB.
+                await connection.execute(
+                    'UPDATE vehicle_history SET startDate = ?, details = ? WHERE id = ?',
+                    [saidaB, JSON.stringify({ ...pDetails, [entradaKey]: volta }), p.id]
+                );
+                if (pObraId) {
+                    await connection.execute(
+                        `UPDATE obras_historico_veiculos SET dataEntrada = ?, ${readColEntrada} = ?
+                         WHERE veiculoId = ? AND obraId = ? AND dataEntrada = ?`,
+                        [saidaB, volta, id, pObraId, p.startDate]
+                    );
+                }
+            } else if (!coversStart && coversEnd) {
+                // Novo cobre o fim → apara o fim do antigo para entradaB.
+                await connection.execute(
+                    'UPDATE vehicle_history SET endDate = ?, details = ? WHERE id = ?',
+                    [entradaB, JSON.stringify({ ...pDetails, [saidaKey]: partida }), p.id]
+                );
+                if (pObraId) {
+                    await connection.execute(
+                        `UPDATE obras_historico_veiculos SET dataSaida = ?, ${readColSaida} = ?
+                         WHERE veiculoId = ? AND obraId = ? AND dataEntrada = ?`,
+                        [entradaB, partida, id, pObraId, p.startDate]
+                    );
+                }
+            } else {
+                // Novo estritamente dentro do antigo → divide em dois:
+                // [Ps, entradaB] (fecha em partida) + [saidaB, Pe] (reabre em volta).
+                await connection.execute(
+                    'UPDATE vehicle_history SET endDate = ?, details = ? WHERE id = ?',
+                    [entradaB, JSON.stringify({ ...pDetails, [saidaKey]: partida }), p.id]
+                );
+                const tailEntry = {
+                    vehicleId: id,
+                    historyType: 'obra',
+                    startDate: saidaB,
+                    endDate: Pe, // preserva o fim original (pode ser null = segue aberto)
+                    details: JSON.stringify({ ...pDetails, [entradaKey]: volta })
+                };
+                const tFields = Object.keys(tailEntry);
+                await connection.execute(
+                    `INSERT INTO vehicle_history (${tFields.join(', ')}) VALUES (${tFields.map(() => '?').join(', ')})`,
+                    Object.values(tailEntry)
+                );
+                if (pObraId) {
+                    // Captura o registro de obra original ANTES de aparar, para copiar
+                    // dados (funcionário, leitura de saída) na parte final.
+                    const [ohRows] = await connection.execute(
+                        'SELECT * FROM obras_historico_veiculos WHERE veiculoId = ? AND obraId = ? AND dataEntrada = ? LIMIT 1',
+                        [id, pObraId, p.startDate]
+                    );
+                    const base = ohRows[0] || {};
+                    // Fecha a parte inicial do registro de obra.
+                    await connection.execute(
+                        `UPDATE obras_historico_veiculos SET dataSaida = ?, ${readColSaida} = ?
+                         WHERE veiculoId = ? AND obraId = ? AND dataEntrada = ?`,
+                        [entradaB, partida, id, pObraId, p.startDate]
+                    );
+                    const tailObra = {
+                        id: randomUUID(),
+                        obraId: pObraId,
+                        veiculoId: vehicle.id,
+                        tipo: vehicle.tipo || 'Desconhecido',
+                        registroInterno: vehicle.registroInterno || '',
+                        placa: vehicle.placa || '',
+                        modelo: `${vehicle.marca || ''} ${vehicle.modelo || ''}`.trim() || 'Modelo N/A',
+                        employeeId: base.employeeId || (pDetails.employeeId ? String(pDetails.employeeId) : null),
+                        employeeName: base.employeeName || pDetails.employeeName || 'Funcionário',
+                        dataEntrada: saidaB,
+                        dataSaida: Pe,
+                        odometroEntrada: readingType === 'odometro' ? volta : 0,
+                        odometroSaida: (readingType === 'odometro' && base.odometroSaida) ? base.odometroSaida : 0,
+                        horimetroEntrada: readingType === 'horimetro' ? volta : 0,
+                        horimetroSaida: (readingType === 'horimetro' && base.horimetroSaida) ? base.horimetroSaida : 0,
+                        observacoes: base.observacoes || ''
+                    };
+                    const toFields = Object.keys(tailObra);
+                    await connection.execute(
+                        `INSERT INTO obras_historico_veiculos (${toFields.join(', ')}) VALUES (${toFields.map(() => '?').join(', ')})`,
+                        Object.values(tailObra)
+                    );
+                }
+            }
+        }
+
+        // 1) FECHA o período da Obra A na saída para B (só se houver obra vigente).
+        if (openHist) {
+            const closedDetails = {
+                ...openDetails,
+                [saidaKey]: partida,
+                observacoesSaida: observacoes ? `[Estadia retroativa em ${obraB.nome}] ${observacoes}` : `Saída para estadia retroativa em ${obraB.nome}`
+            };
+            await connection.execute(
+                'UPDATE vehicle_history SET endDate = ?, details = ? WHERE id = ?',
+                [entradaB, JSON.stringify(closedDetails), openHist.id]
+            );
+            if (obraAId) {
+                await connection.execute(
+                    `UPDATE obras_historico_veiculos SET dataSaida = ?, ${readColSaida} = ?
+                     WHERE veiculoId = ? AND obraId = ? AND dataSaida IS NULL`,
+                    [entradaB, partida, id, obraAId]
+                );
+            }
+        }
+
+        // 2) INSERE a estadia FECHADA na Obra B (sempre).
+        const bHistEntry = {
+            vehicleId: id,
+            historyType: 'obra',
+            startDate: entradaB,
+            endDate: saidaB,
+            details: JSON.stringify({
+                obraId: obraBIdStr,
+                obraNome: obraB.nome,
+                employeeId: employeeBIdStr,
+                employeeName: employeeB.nome,
+                [entradaKey]: partida,
+                [saidaKey]: volta,
+                observacoes: observacoes || '',
+                retroativa: true
+            })
+        };
+        const bFields = Object.keys(bHistEntry);
+        await connection.execute(
+            `INSERT INTO vehicle_history (${bFields.join(', ')}) VALUES (${bFields.map(() => '?').join(', ')})`,
+            Object.values(bHistEntry)
+        );
+
+        const bObraHist = {
+            id: randomUUID(),
+            obraId: obraBIdStr,
+            veiculoId: vehicle.id,
+            tipo: vehicle.tipo || 'Desconhecido',
+            registroInterno: vehicle.registroInterno || '',
+            placa: vehicle.placa || '',
+            modelo: `${vehicle.marca || ''} ${vehicle.modelo || ''}`.trim() || 'Modelo N/A',
+            employeeId: employeeBIdStr,
+            employeeName: employeeB.nome || 'Funcionário',
+            dataEntrada: entradaB,
+            dataSaida: saidaB,
+            odometroEntrada: readingType === 'odometro' ? partida : 0,
+            odometroSaida: readingType === 'odometro' ? volta : 0,
+            horimetroEntrada: readingType === 'horimetro' ? partida : 0,
+            horimetroSaida: readingType === 'horimetro' ? volta : 0,
+            observacoes: observacoes || ''
+        };
+        const bohFields = Object.keys(bObraHist);
+        await connection.execute(
+            `INSERT INTO obras_historico_veiculos (${bohFields.join(', ')}) VALUES (${bohFields.map(() => '?').join(', ')})`,
+            Object.values(bObraHist)
+        );
+
+        // 3) REABRE novo período da Obra A a partir da volta (vira o vigente).
+        //    Só quando havia obra vigente — veículo disponível não tem A para reabrir.
+        //    Mantém obra e operador originais da A; obraAtualId/status do veículo não mudam.
+        if (openHist) {
+        const reopenDetails = {
+            obraId: openDetails.obraId,
+            obraNome: openDetails.obraNome,
+            employeeId: openDetails.employeeId,
+            employeeName: openDetails.employeeName,
+            [entradaKey]: volta,
+            observacoes: `Retorno da estadia retroativa em ${obraB.nome}`
+        };
+        const reopenEntry = {
+            vehicleId: id,
+            historyType: 'obra',
+            startDate: saidaB,
+            endDate: null,
+            details: JSON.stringify(reopenDetails)
+        };
+        const rFields = Object.keys(reopenEntry);
+        await connection.execute(
+            `INSERT INTO vehicle_history (${rFields.join(', ')}) VALUES (${rFields.map(() => '?').join(', ')})`,
+            Object.values(reopenEntry)
+        );
+
+        if (obraAId) {
+            // Recupera dados do funcionário original da A para o novo registro.
+            const reopenObraHist = {
+                id: randomUUID(),
+                obraId: obraAId,
+                veiculoId: vehicle.id,
+                tipo: vehicle.tipo || 'Desconhecido',
+                registroInterno: vehicle.registroInterno || '',
+                placa: vehicle.placa || '',
+                modelo: `${vehicle.marca || ''} ${vehicle.modelo || ''}`.trim() || 'Modelo N/A',
+                employeeId: openDetails.employeeId ? String(openDetails.employeeId) : null,
+                employeeName: openDetails.employeeName || 'Funcionário',
+                dataEntrada: saidaB,
+                dataSaida: null,
+                odometroEntrada: readingType === 'odometro' ? volta : 0,
+                odometroSaida: 0,
+                horimetroEntrada: readingType === 'horimetro' ? volta : 0,
+                horimetroSaida: 0,
+                observacoes: `Retorno da estadia retroativa em ${obraB.nome}`
+            };
+            const rohFields = Object.keys(reopenObraHist);
+            await connection.execute(
+                `INSERT INTO obras_historico_veiculos (${rohFields.join(', ')}) VALUES (${rohFields.map(() => '?').join(', ')})`,
+                Object.values(reopenObraHist)
+            );
+        }
+        } // fim do split (if openHist)
+
+        await connection.commit();
+        req.io.emit('server:sync', { targets: ['vehicles', 'obras'] });
+        res.status(200).json({ message: 'Estadia retroativa registrada com sucesso.' });
+    } catch (error) {
+        await connection.rollback();
+        console.error('❌ Erro ao registrar estadia retroativa:', error);
+        res.status(500).json({ error: 'Falha ao registrar estadia retroativa.', details: error.message });
+    } finally {
+        connection.release();
+    }
+};
+
 const assignToOperational = async (req, res) => {
-    const { id } = req.params; 
+    const { id } = req.params;
     const { subGroup, employeeId, observacoes } = req.body;
     const connection = await db.getConnection();
     await connection.beginTransaction();
@@ -809,6 +1173,7 @@ module.exports = {
     deleteVehicle,
     allocateToObra,
     deallocateFromObra,
+    registrarEstadiaRetroativa,
     assignToOperational,
     unassignFromOperational,
     startMaintenance,

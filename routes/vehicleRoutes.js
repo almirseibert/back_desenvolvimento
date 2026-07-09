@@ -93,6 +93,7 @@ router.post(
 // --- Rotas de Alocação (sem mudança) ---
 router.post('/:id/allocate-obra', vehicleController.allocateToObra);
 router.post('/:id/deallocate-obra', vehicleController.deallocateFromObra);
+router.post('/:id/estadia-retroativa', vehicleController.registrarEstadiaRetroativa);
 router.post('/:id/assign-operational', vehicleController.assignToOperational);
 router.post('/:id/unassign-operational', vehicleController.unassignFromOperational);
 router.post('/:id/start-maintenance', vehicleController.startMaintenance);
