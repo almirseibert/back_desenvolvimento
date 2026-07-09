@@ -93,14 +93,16 @@ const http = require('http');
         if (e.code !== 'ER_DUP_KEYNAME') console.warn('[migration] idx_authNumber:', e.message);
     }
 
-    // ───── Expandir ENUM partners.tipo_parceiro para suportar 'comboio' ─────
+    // ───── Expandir ENUM partners.tipo_parceiro para suportar 'comboio' e 'locador' ─────
     // Causa do erro: "Data truncated for column 'tipo_parceiro' at row 1"
     // ao distribuir combustível de comboio (qualquer gravação que tentasse
     // 'comboio' falhava porque o ENUM só tinha 'posto' e 'fornecedor').
+    // 'locador' (Equip. Terceirizados) foi adicionado depois: sem ele no ENUM,
+    // o cadastro de Locador caía no fallback 'posto' e aparecia na aba errada.
     try {
         await db.query(`
             ALTER TABLE \`partners\`
-            MODIFY COLUMN \`tipo_parceiro\` ENUM('posto','fornecedor','comboio') DEFAULT 'posto'
+            MODIFY COLUMN \`tipo_parceiro\` ENUM('posto','fornecedor','comboio','locador') DEFAULT 'posto'
         `);
         // Garante que nenhum registro fique com tipo nulo/vazio
         await db.query(`UPDATE partners SET tipo_parceiro = 'posto' WHERE tipo_parceiro IS NULL OR tipo_parceiro = ''`);

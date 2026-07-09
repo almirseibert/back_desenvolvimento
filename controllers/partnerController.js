@@ -13,7 +13,7 @@ const parsePartnerJsonFields = (partner) => {
 // --- Sanitiza tipo_parceiro para os únicos valores aceitos pelo ENUM ---
 // Evita "Data truncated for column 'tipo_parceiro' at row 1" caso o frontend
 // envie um valor desconhecido (string vazia, null, valor antigo, etc.).
-const TIPOS_PARCEIRO_VALIDOS = ['posto', 'fornecedor', 'comboio'];
+const TIPOS_PARCEIRO_VALIDOS = ['posto', 'fornecedor', 'comboio', 'locador'];
 const sanitizeTipoParceiro = (tipo, fallback = 'posto') => {
     if (tipo == null) return fallback;
     const t = String(tipo).trim().toLowerCase();
