@@ -776,7 +776,7 @@ const FUEL_PCT_THRESHOLDS = [50, 75, 90, 100];
 
 const checkObraFuelPercent = async (obraId) => {
     const [[obra]] = await db.query(
-        'SELECT nome, valorTotalContrato, responsavel_email FROM obras WHERE id = ?',
+        'SELECT nome, valorTotalContrato, responsavel, responsavel_email, responsavel_whatsapp FROM obras WHERE id = ?',
         [obraId]
     );
     if (!obra) return;
@@ -820,8 +820,13 @@ const checkObraFuelPercent = async (obraId) => {
             obraId,
         };
 
-        // Disparo via notification_targets configurados no admin
-        dispatchAsync('combustivel_obra_20pct', payload, { obraId });
+        // Disparo via notification_targets configurados no admin,
+        // mais o responsável da obra por WhatsApp (contato interno).
+        const extraContacts = [];
+        if (obra.responsavel_whatsapp) {
+            extraContacts.push({ channel: 'whatsapp', contact: obra.responsavel_whatsapp, name: obra.responsavel || 'Responsável da Obra' });
+        }
+        dispatchAsync('combustivel_obra_20pct', payload, { obraId, extraContacts });
 
         // Envio direto ao responsável da obra (se tiver email configurado)
         if (obra.responsavel_email) {

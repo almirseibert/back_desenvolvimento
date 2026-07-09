@@ -692,6 +692,44 @@ const http = require('http');
 })();
 
 // ====================================================================
+// MIGRAÇÃO — Terceirizados: contrato de locação nos veículos + pagamentos
+// ====================================================================
+(async () => {
+    const addColumn = async (sql, label) => {
+        try {
+            await db.query(sql);
+        } catch (e) {
+            if (e.code !== 'ER_DUP_FIELDNAME') console.warn(`⚠️ [migration] ${label}:`, e.message);
+        }
+    };
+    try {
+        await addColumn(`ALTER TABLE vehicles ADD COLUMN locadorId VARCHAR(36) DEFAULT NULL`, 'vehicles.locadorId');
+        await addColumn(`ALTER TABLE vehicles ADD COLUMN locacaoHorasContratadas DECIMAL(12,2) DEFAULT NULL`, 'vehicles.locacaoHorasContratadas');
+        await addColumn(`ALTER TABLE vehicles ADD COLUMN locacaoValorTotal DECIMAL(14,2) DEFAULT NULL`, 'vehicles.locacaoValorTotal');
+        await addColumn(`ALTER TABLE vehicles ADD COLUMN locacaoVigenciaInicio DATE DEFAULT NULL`, 'vehicles.locacaoVigenciaInicio');
+        await addColumn(`ALTER TABLE vehicles ADD COLUMN locacaoVigenciaFim DATE DEFAULT NULL`, 'vehicles.locacaoVigenciaFim');
+
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS terceirizado_pagamentos (
+                id               VARCHAR(36)  PRIMARY KEY,
+                locadorId        VARCHAR(36)  NOT NULL,
+                vehicleId        VARCHAR(36)  DEFAULT NULL,
+                data             DATE         DEFAULT NULL,
+                valor            DECIMAL(14,2) NOT NULL DEFAULT 0,
+                descricao        VARCHAR(500) DEFAULT NULL,
+                created_by_email VARCHAR(255) DEFAULT NULL,
+                created_at       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_tercpag_locador (locadorId),
+                INDEX idx_tercpag_vehicle (vehicleId)
+            )
+        `);
+        console.log('✅ Migração terceirizado_pagamentos concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] terceirizado_pagamentos:', e.message);
+    }
+})();
+
+// ====================================================================
 // MIGRAÇÃO — Log de e-mails enviados pelo sistema (auditoria de envios)
 // ====================================================================
 (async () => {
@@ -1055,6 +1093,7 @@ const notificationLogRoutes    = require('./routes/notificationLogRoutes');
 const suggestionRoutes         = require('./routes/suggestionRoutes');
 const vehicleLinkRoutes        = require('./routes/vehicleLinkRoutes');
 const comboioReportRoutes      = require('./routes/comboioReportRoutes');
+const terceirizadoPagamentoRoutes = require('./routes/terceirizadoPagamentoRoutes');
 
 // ====================================================================
 // CONFIGURAÇÃO DO HTTP SERVER E SOCKET.IO
@@ -1140,6 +1179,23 @@ apiRouter.post('/upload', upload.single('file'), (req, res) => {
   }
 });
 
+// ✅ Contatos internos ativos (leitura) — usado no seletor de Responsável da Obra.
+// A gestão completa (CRUD) continua restrita a admin em /admin/internal-contacts.
+apiRouter.get('/internal-contacts', async (req, res) => {
+    try {
+        const [rows] = await db.query(
+            `SELECT id, nome, cargo, setor, whatsapp, email
+             FROM internal_contacts
+             WHERE ativo = 1
+             ORDER BY nome ASC`
+        );
+        res.json(rows);
+    } catch (error) {
+        console.error('❌ Erro ao listar contatos internos:', error);
+        res.status(500).json({ error: 'Erro ao listar contatos internos.' });
+    }
+});
+
 // ✅ Rotas Protegidas
 apiRouter.use('/vehicles', vehicleRoutes);
 apiRouter.use('/obras', obraRoutes);
@@ -1178,6 +1234,7 @@ apiRouter.use('/notification-log', notificationLogRoutes);
 apiRouter.use('/suggestions', suggestionRoutes);
 apiRouter.use('/vehicle-links', vehicleLinkRoutes);
 apiRouter.use('/comboio-report', comboioReportRoutes);
+apiRouter.use('/terceirizadoPagamentos', terceirizadoPagamentoRoutes);
 
 // ─── WEBHOOK PÚBLICO DO CHATBOT ─────────────────────────────────────────────
 // Deve ficar ANTES de app.use('/api', apiRouter) para não passar pelo authMiddleware

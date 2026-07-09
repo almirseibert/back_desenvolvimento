@@ -178,6 +178,9 @@ const ALLOWED_VEHICLE_FIELDS = new Set([
     'media_consumo', 'percentual_tolerancia',
     'isComboioVehicle', 'ativo', 'isSucata', 'isOutsourced',
     'permiteMultiplosAbastecimentos',
+    // Contrato de locação (equipamento terceirizado)
+    'locadorId', 'locacaoHorasContratadas', 'locacaoValorTotal',
+    'locacaoVigenciaInicio', 'locacaoVigenciaFim',
 ]);
 
 const updateVehicle = async (req, res) => {

@@ -141,6 +141,7 @@ const createObra = async (req, res) => {
     if (data.latitude === '') data.latitude = null;
     if (data.longitude === '') data.longitude = null;
     if (data.responsavel === '') data.responsavel = null;
+    if (data.responsavel_whatsapp === '') data.responsavel_whatsapp = null;
     if (data.fiscal === '') data.fiscal = null;
     if (data.dataInicioPrevisto === '') data.dataInicioPrevisto = null;
     if (data.dataFimPrevisto === '') data.dataFimPrevisto = null;
@@ -210,6 +211,7 @@ const updateObra = async (req, res) => {
     if (data.latitude === '') data.latitude = null;
     if (data.longitude === '') data.longitude = null;
     if (data.responsavel === '') data.responsavel = null;
+    if (data.responsavel_whatsapp === '') data.responsavel_whatsapp = null;
     if (data.fiscal === '') data.fiscal = null;
     if (data.dataInicioPrevisto === '') data.dataInicioPrevisto = null;
     if (data.dataFimPrevisto === '') data.dataFimPrevisto = null;
@@ -262,11 +264,14 @@ const updateObra = async (req, res) => {
             const marcos = [30, 50, 70];
             for (const m of marcos) {
                 if (pctAntes < m && pctDepois >= m) {
-                    const [r] = await db.query('SELECT nome, responsavel, responsavel_email FROM obras WHERE id = ?', [id]);
+                    const [r] = await db.query('SELECT nome, responsavel, responsavel_email, responsavel_whatsapp FROM obras WHERE id = ?', [id]);
                     const obraNome = r[0]?.nome || '—';
                     // Notifica o responsável da própria obra, além dos destinos globais
                     // configurados em notification_targets para o evento.
                     const extraContacts = [];
+                    if (r[0]?.responsavel_whatsapp) {
+                        extraContacts.push({ channel: 'whatsapp', contact: r[0].responsavel_whatsapp, name: r[0].responsavel || 'Responsável da Obra' });
+                    }
                     if (r[0]?.responsavel_email) {
                         extraContacts.push({ channel: 'email', contact: r[0].responsavel_email, name: r[0].responsavel || 'Responsável da Obra' });
                     }
