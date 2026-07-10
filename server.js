@@ -22,6 +22,7 @@ const http = require('http');
         // FASE 1.3 — Campos adicionais em obras
         { table: 'obras',                  column: 'orgao_contratante',               def: "VARCHAR(50) DEFAULT NULL" },
         { table: 'obras',                  column: 'regiao',                          def: "ENUM('Lajeado','Santa Maria') DEFAULT NULL" },
+        // NOTA: obras.created_at é adicionada em IIFE dedicado (com backfill one-time), não aqui.
         // FASE 0.4 — Sub-tipos e médias de consumo
         { table: 'vehicles',               column: 'sub_tipo',                        def: 'VARCHAR(100) DEFAULT NULL' },
         { table: 'vehicles',               column: 'media_consumo',                   def: 'DECIMAL(10,3) DEFAULT NULL' },
@@ -804,6 +805,30 @@ const http = require('http');
         console.log('✅ Migração vehicle_links concluída.');
     } catch (e) {
         console.warn('⚠️ [migration] vehicle_links:', e.message);
+    }
+})();
+
+// ====================================================================
+// MIGRAÇÃO — created_at em obras (ordenação "Abertura mais recente")
+// Guardada por existência da coluna: o backfill roda UMA vez só. Se rodasse
+// a cada boot, corromperia o created_at de obras que ativam depois (quando o
+// dataInicio real é preenchido, ele sobrescreveria a data de criação).
+// ====================================================================
+(async () => {
+    try {
+        const [col] = await db.query(
+            `SELECT COUNT(*) AS c FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = 'obras' AND column_name = 'created_at'`
+        );
+        if (col[0].c > 0) return; // coluna já existe — não re-executa o backfill
+
+        await db.query('ALTER TABLE obras ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
+        // Backfill único: obras com início real herdam essa data como "abertura".
+        // As pré-ativas (dataInicio null) ficam com o CURRENT_TIMESTAMP do ALTER.
+        await db.query('UPDATE obras SET created_at = dataInicio WHERE dataInicio IS NOT NULL');
+        console.log('✅ Migração obras.created_at + backfill concluída.');
+    } catch (e) {
+        console.warn('⚠️ [migration] obras.created_at:', e.message);
     }
 })();
 
