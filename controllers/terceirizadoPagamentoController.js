@@ -17,7 +17,7 @@ const getTerceirizadoPagamentos = async (req, res) => {
 };
 
 const createTerceirizadoPagamento = async (req, res) => {
-    const { locadorId, vehicleId, data, valor, descricao, createdBy } = req.body;
+    const { locadorId, vehicleId, contratoId, data, valor, descricao, createdBy } = req.body;
     if (!locadorId) return res.status(400).json({ error: 'Locador é obrigatório.' });
     const valorNum = parseFloat(valor);
     if (!valorNum || valorNum <= 0) return res.status(400).json({ error: 'Valor de pagamento inválido.' });
@@ -28,9 +28,9 @@ const createTerceirizadoPagamento = async (req, res) => {
     try {
         await db.execute(
             `INSERT INTO terceirizado_pagamentos
-                (id, locadorId, vehicleId, data, valor, descricao, created_by_email)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [id, locadorId, vehicleId || null, data || null, valorNum, descricao || null, criadoPor]
+                (id, locadorId, vehicleId, contratoId, data, valor, descricao, created_by_email)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [id, locadorId, vehicleId || null, contratoId || null, data || null, valorNum, descricao || null, criadoPor]
         );
         const [rows] = await db.query('SELECT * FROM terceirizado_pagamentos WHERE id = ?', [id]);
         if (req.io) req.io.emit('server:sync', { targets: ['terceirizadoPagamentos'] });
@@ -43,16 +43,16 @@ const createTerceirizadoPagamento = async (req, res) => {
 
 const updateTerceirizadoPagamento = async (req, res) => {
     const { id } = req.params;
-    const { locadorId, vehicleId, data, valor, descricao } = req.body;
+    const { locadorId, vehicleId, contratoId, data, valor, descricao } = req.body;
     const valorNum = parseFloat(valor);
     if (!valorNum || valorNum <= 0) return res.status(400).json({ error: 'Valor de pagamento inválido.' });
 
     try {
         const [result] = await db.execute(
             `UPDATE terceirizado_pagamentos
-                SET locadorId = ?, vehicleId = ?, data = ?, valor = ?, descricao = ?
+                SET locadorId = ?, vehicleId = ?, contratoId = ?, data = ?, valor = ?, descricao = ?
               WHERE id = ?`,
-            [locadorId, vehicleId || null, data || null, valorNum, descricao || null, id]
+            [locadorId, vehicleId || null, contratoId || null, data || null, valorNum, descricao || null, id]
         );
         if (result.affectedRows === 0) return res.status(404).json({ error: 'Pagamento não encontrado.' });
         const [rows] = await db.query('SELECT * FROM terceirizado_pagamentos WHERE id = ?', [id]);

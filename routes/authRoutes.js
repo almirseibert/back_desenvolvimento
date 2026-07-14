@@ -7,6 +7,10 @@ const db = require('../database');
 // --- ROTAS PÚBLICAS ---
 router.post('/login', authController.login);
 router.post('/register', authController.register);
+// Renovação silenciosa de sessão e logout (revogação). Públicas de propósito:
+// o access token pode já estar expirado quando o cliente as chama.
+router.post('/refresh', authController.refresh);
+router.post('/logout', authController.logout);
 
 // --- ROTAS PROTEGIDAS ---
 // 🚨 Rota comentada para corrigir o TypeError (a função validatePassword não existe no controller)

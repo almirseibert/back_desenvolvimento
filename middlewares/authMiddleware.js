@@ -66,8 +66,13 @@ const authMiddleware = async (req, res, next) => {
         next();
     } catch (err) {
         console.error("Erro authMiddleware:", err.message);
-        // Se o token for inválido, expirado, ou a verificação falhar
-        return res.status(403).json({ error: 'Token inválido ou expirado.' });
+        // Distingue token EXPIRADO (renovável via refresh token) de token
+        // realmente inválido/adulterado. O frontend usa o 401 + code para
+        // disparar a renovação silenciosa em vez de deslogar o usuário.
+        if (err.name === 'TokenExpiredError') {
+            return res.status(401).json({ error: 'Token expirado.', code: 'TOKEN_EXPIRED' });
+        }
+        return res.status(403).json({ error: 'Token inválido.' });
     }
 };
 
