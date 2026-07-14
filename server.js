@@ -46,6 +46,10 @@ const http = require('http');
         // Fotos das distribuições feitas pelo operador do comboio direto na obra
         // (horímetro, RE/placa, medidor zerado, medidor com litragem). JSON com URLs.
         { table: 'comboio_transactions',   column: 'fotos',                            def: 'JSON DEFAULT NULL' },
+        // Drenagem: destino do combustível retirado do veículo de origem.
+        // 'comboio' (devolve ao tanque do comboio), 'transfusao' (abastece outro
+        // equipamento) ou 'eliminado' (combustível contaminado, descartado).
+        { table: 'comboio_transactions',   column: 'destino',                          def: "VARCHAR(20) DEFAULT NULL" },
         { table: 'partners',               column: 'vehicle_id',                       def: 'VARCHAR(36) DEFAULT NULL' },
         // Campo KM/Hr atual no modal de OS/OC
         { table: 'orders',                 column: 'kmHrAtual',                        def: 'DECIMAL(12,1) DEFAULT NULL' },
@@ -57,6 +61,10 @@ const http = require('http');
         { table: 'refuelings',             column: 'reserved_amount',                  def: 'DECIMAL(12,2) DEFAULT NULL' },
         { table: 'refuelings',             column: 'reserved_price',                   def: 'DECIMAL(8,3) DEFAULT NULL' },
         { table: 'refuelings',             column: 'is_full_tank',                     def: 'TINYINT(1) DEFAULT 0' },
+        // Liga o refueling-espelho (ajuste negativo da origem / abastecimento do
+        // receptor) à transação de drenagem que o gerou, para permitir reversão
+        // na exclusão e o desconto de litragem no cálculo de médias.
+        { table: 'refuelings',             column: 'drenagemTransactionId',            def: 'VARCHAR(36) DEFAULT NULL' },
         // ── Módulo de Planejamento de Obras (pré-obra) ──
         // Ciclo de vida: radar → planejada → mobilizacao → ativa → finalizada.
         // 'dataFimPrevisto' já existia no schema (órfã) e foi adotada; aqui só o par de início.
@@ -92,6 +100,15 @@ const http = require('http');
         await db.query('ALTER TABLE `comboio_transactions` ADD INDEX `idx_authNumber` (`authNumber`)');
     } catch (e) {
         if (e.code !== 'ER_DUP_KEYNAME') console.warn('[migration] idx_authNumber:', e.message);
+    }
+
+    // Backfill idempotente: drenagens antigas eram sempre "para o comboio".
+    try {
+        await db.query(
+            "UPDATE comboio_transactions SET destino = 'comboio' WHERE type = 'drenagem' AND (destino IS NULL OR destino = '')"
+        );
+    } catch (e) {
+        console.warn('[migration] backfill comboio_transactions.destino:', e.message);
     }
 
     // ───── Expandir ENUM partners.tipo_parceiro para suportar 'comboio' e 'locador' ─────
