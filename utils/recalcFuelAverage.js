@@ -23,9 +23,11 @@ async function recalcFuelAverage(connection, vehicleId) {
     );
     if (!vehicle) return;
 
-    // Últimas 4 ordens concluídas com leitura e litros registrados
+    // Últimas 4 ordens concluídas com leitura e litros registrados.
+    // Ajustes de drenagem (litrosAbastecidos < 0, sem leitura) ficam de fora
+    // por causa dos filtros — eles são tratados separadamente abaixo.
     const [orders] = await connection.execute(
-        `SELECT id, odometro, horimetro, litrosAbastecidos
+        `SELECT id, odometro, horimetro, litrosAbastecidos, data
          FROM refuelings
          WHERE vehicleId = ?
            AND status = 'Concluída'
@@ -35,6 +37,27 @@ async function recalcFuelAverage(connection, vehicleId) {
          LIMIT 4`,
         [vehicleId]
     );
+
+    // Ajustes de drenagem (litros retirados do veículo). São negativos e não têm
+    // leitura, então não entram como "pontos" do cálculo — apenas descontam a
+    // litragem efetiva do intervalo onde ocorreram.
+    const [drenagens] = await connection.execute(
+        `SELECT litrosAbastecidos, data
+         FROM refuelings
+         WHERE vehicleId = ?
+           AND drenagemTransactionId IS NOT NULL
+           AND litrosAbastecidos < 0`,
+        [vehicleId]
+    );
+
+    // Soma dos litros drenados (negativos) com older.data < data <= newer.data.
+    const drenagemBetween = (olderData, newerData) => drenagens.reduce((sum, d) => {
+        const dt = new Date(d.data).getTime();
+        if (dt > new Date(olderData).getTime() && dt <= new Date(newerData).getTime()) {
+            return sum + parseFloat(d.litrosAbastecidos || 0);
+        }
+        return sum;
+    }, 0);
 
     // Precisa de pelo menos 2 registros para calcular 1 intervalo
     const avgLast = [null, null, null];
@@ -47,7 +70,8 @@ async function recalcFuelAverage(connection, vehicleId) {
             const readingNewer = parseFloat(newer.odometro || newer.horimetro || 0);
             const readingOlder = parseFloat(older.odometro || older.horimetro || 0);
             const diff = readingNewer - readingOlder;
-            const liters = parseFloat(newer.litrosAbastecidos || 0);
+            // Litragem efetiva = abastecido no intervalo menos o que foi drenado nele.
+            const liters = parseFloat(newer.litrosAbastecidos || 0) + drenagemBetween(older.data, newer.data);
             if (diff > 0 && liters > 0) {
                 intervals.push(diff / liters);
             }
