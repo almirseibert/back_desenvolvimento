@@ -101,11 +101,34 @@ const generateContratoPdf = async ({ contrato = {}, locador = {}, obra = {} } = 
 
         // ── Volume e preço ───────────────────────────────────────────
         heading('CLÁUSULA 2ª — DO VOLUME E DO PREÇO');
-        paragraph(
-            `A CONTRATADA executará o total de ${fmtNum(contrato.horasContratadas)} horas de máquina, ` +
-            `ao valor de ${fmtBRL(contrato.valorHora)} por hora, totalizando o valor global e fechado de ` +
-            `${fmtBRL(contrato.valorTotal)}.`
-        );
+        let itens = contrato.itensContratados;
+        if (typeof itens === 'string') { try { itens = JSON.parse(itens); } catch { itens = []; } }
+        if (!Array.isArray(itens)) itens = [];
+
+        if (contrato.contractType === 'fechado') {
+            paragraph(
+                `A CONTRATADA executará o objeto pelo valor global e fechado de ` +
+                `${fmtBRL(contrato.valorTotal)}, independentemente do volume de horas efetivamente executado.`
+            );
+        } else if (itens.length > 0) {
+            paragraph(
+                `A CONTRATADA executará os seguintes volumes de máquina, cujo somatório perfaz o valor ` +
+                `global e fechado de ${fmtBRL(contrato.valorTotal)}:`
+            );
+            itens.forEach((i) => {
+                const h = Number(i.hours) || 0;
+                const p = Number(i.price) || 0;
+                paragraph(
+                    `• ${i.type || '—'}: ${fmtNum(h)} h × ${fmtBRL(p)}/h = ${fmtBRL(h * p)}.`
+                );
+            });
+        } else {
+            paragraph(
+                `A CONTRATADA executará o total de ${fmtNum(contrato.horasContratadas)} horas de máquina, ` +
+                `ao valor de ${fmtBRL(contrato.valorHora)} por hora, totalizando o valor global e fechado de ` +
+                `${fmtBRL(contrato.valorTotal)}.`
+            );
+        }
         paragraph(
             `As horas efetivamente executadas serão apuradas pelo Relatório de Horas da CONTRATANTE, ` +
             `servindo de acompanhamento físico da execução, sem alterar o valor global ora ajustado.`

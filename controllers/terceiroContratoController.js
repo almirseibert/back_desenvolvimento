@@ -23,6 +23,39 @@ const normalizeMaquinas = (m) => {
     return [];
 };
 
+// Normaliza os itens do plano de trabalho ([{ type, hours, price }]).
+const normalizeItens = (itens) => {
+    let arr = itens;
+    if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { arr = []; } }
+    if (!Array.isArray(arr)) return [];
+    return arr
+        .filter((i) => i && i.type)
+        .map((i) => ({ type: String(i.type), hours: num(i.hours), price: num(i.price) }));
+};
+
+// A partir do plano, calcula horas totais e valor total (por horas) ou usa o valor fechado.
+const derivarAgregados = ({ contractType, itens, horasContratadas, valorHora, valorTotal }) => {
+    if (contractType === 'fechado') {
+        return {
+            horas: num(horasContratadas),
+            vHora: 0,
+            vTotal: valorTotal != null && valorTotal !== '' ? num(valorTotal) : 0,
+            itens: [],
+        };
+    }
+    // 'horas': se vier plano de itens, ele é a fonte de verdade; senão cai no par simples.
+    if (itens.length > 0) {
+        const horas = itens.reduce((a, i) => a + i.hours, 0);
+        const vTotal = itens.reduce((a, i) => a + i.hours * i.price, 0);
+        const vHora = horas > 0 ? Math.round((vTotal / horas) * 100) / 100 : 0;
+        return { horas, vHora, vTotal, itens };
+    }
+    const horas = num(horasContratadas);
+    const vHora = num(valorHora);
+    const vTotal = valorTotal != null && valorTotal !== '' ? num(valorTotal) : horas * vHora;
+    return { horas, vHora, vTotal, itens: [] };
+};
+
 // Impede que uma máquina fique vinculada a mais de um contrato (1 máquina : 1 contrato).
 // `exceptId` ignora o próprio contrato na edição. Retorna array de vehicleIds em conflito.
 const maquinasEmConflito = async (maquinas, exceptId = null) => {
@@ -67,15 +100,17 @@ const createTerceiroContrato = async (req, res) => {
     const {
         locadorId, obraId, tipoMaquina, horasContratadas, valorHora,
         valorTotal, vigenciaInicio, vigenciaFim, status, observacoes, maquinas, createdBy,
+        contractType, itensContratados,
     } = req.body;
 
     if (!locadorId) return res.status(400).json({ error: 'Terceiro (locador) é obrigatório.' });
     if (!obraId) return res.status(400).json({ error: 'Obra é obrigatória.' });
 
-    const horas = num(horasContratadas);
-    const vHora = num(valorHora);
-    // Valor total: usa o enviado; se ausente, deriva de horas × valor/hora.
-    const vTotal = valorTotal != null && valorTotal !== '' ? num(valorTotal) : horas * vHora;
+    const tipoContrato = contractType === 'fechado' ? 'fechado' : 'horas';
+    const itens = normalizeItens(itensContratados);
+    const { horas, vHora, vTotal, itens: itensFinal } = derivarAgregados({
+        contractType: tipoContrato, itens, horasContratadas, valorHora, valorTotal,
+    });
     const maqs = normalizeMaquinas(maquinas);
 
     const id = randomUUID();
@@ -90,11 +125,12 @@ const createTerceiroContrato = async (req, res) => {
         await db.execute(
             `INSERT INTO terceiro_contratos
                 (id, numero, locadorId, obraId, tipoMaquina, horasContratadas, valorHora,
-                 valorTotal, vigenciaInicio, vigenciaFim, status, observacoes, maquinas, created_by_email)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                 valorTotal, vigenciaInicio, vigenciaFim, status, observacoes, maquinas,
+                 contractType, itensContratados, created_by_email)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [id, numero, locadorId, obraId, tipoMaquina || null, horas, vHora, vTotal,
              vigenciaInicio || null, vigenciaFim || null, status || 'ativo', observacoes || null,
-             JSON.stringify(maqs), criadoPor]
+             JSON.stringify(maqs), tipoContrato, JSON.stringify(itensFinal), criadoPor]
         );
         const [rows] = await db.query('SELECT * FROM terceiro_contratos WHERE id = ?', [id]);
         if (req.io) req.io.emit('server:sync', { targets: ['terceiroContratos'] });
@@ -110,14 +146,17 @@ const updateTerceiroContrato = async (req, res) => {
     const {
         locadorId, obraId, tipoMaquina, horasContratadas, valorHora,
         valorTotal, vigenciaInicio, vigenciaFim, status, observacoes, maquinas,
+        contractType, itensContratados,
     } = req.body;
 
     if (!locadorId) return res.status(400).json({ error: 'Terceiro (locador) é obrigatório.' });
     if (!obraId) return res.status(400).json({ error: 'Obra é obrigatória.' });
 
-    const horas = num(horasContratadas);
-    const vHora = num(valorHora);
-    const vTotal = valorTotal != null && valorTotal !== '' ? num(valorTotal) : horas * vHora;
+    const tipoContrato = contractType === 'fechado' ? 'fechado' : 'horas';
+    const itens = normalizeItens(itensContratados);
+    const { horas, vHora, vTotal, itens: itensFinal } = derivarAgregados({
+        contractType: tipoContrato, itens, horasContratadas, valorHora, valorTotal,
+    });
     const maqs = normalizeMaquinas(maquinas);
 
     try {
@@ -128,11 +167,12 @@ const updateTerceiroContrato = async (req, res) => {
         const [result] = await db.execute(
             `UPDATE terceiro_contratos
                 SET locadorId = ?, obraId = ?, tipoMaquina = ?, horasContratadas = ?, valorHora = ?,
-                    valorTotal = ?, vigenciaInicio = ?, vigenciaFim = ?, status = ?, observacoes = ?, maquinas = ?
+                    valorTotal = ?, vigenciaInicio = ?, vigenciaFim = ?, status = ?, observacoes = ?, maquinas = ?,
+                    contractType = ?, itensContratados = ?
               WHERE id = ?`,
             [locadorId, obraId, tipoMaquina || null, horas, vHora, vTotal,
              vigenciaInicio || null, vigenciaFim || null, status || 'ativo', observacoes || null,
-             JSON.stringify(maqs), id]
+             JSON.stringify(maqs), tipoContrato, JSON.stringify(itensFinal), id]
         );
         if (result.affectedRows === 0) return res.status(404).json({ error: 'Contrato não encontrado.' });
         const [rows] = await db.query('SELECT * FROM terceiro_contratos WHERE id = ?', [id]);

@@ -796,6 +796,19 @@ const http = require('http');
         } catch (err) {
             if (err.code !== 'ER_DUP_FIELDNAME') throw err;
         }
+        // Plano de trabalho estilo Obra: tipo de contrato ('horas' | 'fechado') e
+        // itens contratados por subgrupo ([{ type, hours, price }]). horasContratadas
+        // e valorTotal continuam sendo os AGREGADOS (soma), consumidos pelo cálculo de saldo.
+        try {
+            await db.query(`ALTER TABLE terceiro_contratos ADD COLUMN contractType VARCHAR(20) NOT NULL DEFAULT 'horas'`);
+        } catch (err) {
+            if (err.code !== 'ER_DUP_FIELDNAME') throw err;
+        }
+        try {
+            await db.query(`ALTER TABLE terceiro_contratos ADD COLUMN itensContratados JSON DEFAULT NULL`);
+        } catch (err) {
+            if (err.code !== 'ER_DUP_FIELDNAME') throw err;
+        }
         console.log('✅ Migração terceiro_contratos concluída.');
     } catch (e) {
         console.warn('⚠️ [migration] terceiro_contratos:', e.message);
