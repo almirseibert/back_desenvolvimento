@@ -15,6 +15,21 @@ const num = (v) => {
     return Number.isFinite(n) ? n : 0;
 };
 
+const FOROS_VALIDOS = ['Santa Maria', 'Lajeado'];
+
+// Cláusulas jurídicas parametrizáveis: aplica default do contrato-modelo quando
+// o campo não vier preenchido (contratos antigos, ou criação rápida).
+const clausulasJuridicas = (body) => ({
+    prazoPagamentoDias: body.prazoPagamentoDias != null && body.prazoPagamentoDias !== '' ? parseInt(body.prazoPagamentoDias, 10) || 30 : 30,
+    percentualJurosMora: body.percentualJurosMora != null && body.percentualJurosMora !== '' ? num(body.percentualJurosMora) : 1,
+    percentualMultaMora: body.percentualMultaMora != null && body.percentualMultaMora !== '' ? num(body.percentualMultaMora) : 1,
+    prazoSubstituicaoHoras: body.prazoSubstituicaoHoras != null && body.prazoSubstituicaoHoras !== '' ? parseInt(body.prazoSubstituicaoHoras, 10) || 48 : 48,
+    prazoInicioServicoHoras: body.prazoInicioServicoHoras != null && body.prazoInicioServicoHoras !== '' ? parseInt(body.prazoInicioServicoHoras, 10) || 48 : 48,
+    percentualMultaInadimplemento: body.percentualMultaInadimplemento != null && body.percentualMultaInadimplemento !== '' ? num(body.percentualMultaInadimplemento) : 0.5,
+    avisoPrevioRescisaoDias: body.avisoPrevioRescisaoDias != null && body.avisoPrevioRescisaoDias !== '' ? parseInt(body.avisoPrevioRescisaoDias, 10) || 2 : 2,
+    foroComarca: FOROS_VALIDOS.includes(body.foroComarca) ? body.foroComarca : 'Santa Maria',
+});
+
 const normalizeMaquinas = (m) => {
     if (Array.isArray(m)) return m.filter(Boolean);
     if (typeof m === 'string') {
@@ -112,6 +127,7 @@ const createTerceiroContrato = async (req, res) => {
         contractType: tipoContrato, itens, horasContratadas, valorHora, valorTotal,
     });
     const maqs = normalizeMaquinas(maquinas);
+    const clausulas = clausulasJuridicas(req.body);
 
     const id = randomUUID();
     const criadoPor = createdBy?.userEmail || req.user?.email || null;
@@ -126,11 +142,17 @@ const createTerceiroContrato = async (req, res) => {
             `INSERT INTO terceiro_contratos
                 (id, numero, locadorId, obraId, tipoMaquina, horasContratadas, valorHora,
                  valorTotal, vigenciaInicio, vigenciaFim, status, observacoes, maquinas,
-                 contractType, itensContratados, created_by_email)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                 contractType, itensContratados, created_by_email,
+                 prazoPagamentoDias, percentualJurosMora, percentualMultaMora,
+                 prazoSubstituicaoHoras, prazoInicioServicoHoras, percentualMultaInadimplemento,
+                 avisoPrevioRescisaoDias, foroComarca)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [id, numero, locadorId, obraId, tipoMaquina || null, horas, vHora, vTotal,
              vigenciaInicio || null, vigenciaFim || null, status || 'ativo', observacoes || null,
-             JSON.stringify(maqs), tipoContrato, JSON.stringify(itensFinal), criadoPor]
+             JSON.stringify(maqs), tipoContrato, JSON.stringify(itensFinal), criadoPor,
+             clausulas.prazoPagamentoDias, clausulas.percentualJurosMora, clausulas.percentualMultaMora,
+             clausulas.prazoSubstituicaoHoras, clausulas.prazoInicioServicoHoras, clausulas.percentualMultaInadimplemento,
+             clausulas.avisoPrevioRescisaoDias, clausulas.foroComarca]
         );
         const [rows] = await db.query('SELECT * FROM terceiro_contratos WHERE id = ?', [id]);
         if (req.io) req.io.emit('server:sync', { targets: ['terceiroContratos'] });
@@ -158,6 +180,7 @@ const updateTerceiroContrato = async (req, res) => {
         contractType: tipoContrato, itens, horasContratadas, valorHora, valorTotal,
     });
     const maqs = normalizeMaquinas(maquinas);
+    const clausulas = clausulasJuridicas(req.body);
 
     try {
         const conflito = await maquinasEmConflito(maqs, id);
@@ -168,11 +191,17 @@ const updateTerceiroContrato = async (req, res) => {
             `UPDATE terceiro_contratos
                 SET locadorId = ?, obraId = ?, tipoMaquina = ?, horasContratadas = ?, valorHora = ?,
                     valorTotal = ?, vigenciaInicio = ?, vigenciaFim = ?, status = ?, observacoes = ?, maquinas = ?,
-                    contractType = ?, itensContratados = ?
+                    contractType = ?, itensContratados = ?,
+                    prazoPagamentoDias = ?, percentualJurosMora = ?, percentualMultaMora = ?,
+                    prazoSubstituicaoHoras = ?, prazoInicioServicoHoras = ?, percentualMultaInadimplemento = ?,
+                    avisoPrevioRescisaoDias = ?, foroComarca = ?
               WHERE id = ?`,
             [locadorId, obraId, tipoMaquina || null, horas, vHora, vTotal,
              vigenciaInicio || null, vigenciaFim || null, status || 'ativo', observacoes || null,
-             JSON.stringify(maqs), tipoContrato, JSON.stringify(itensFinal), id]
+             JSON.stringify(maqs), tipoContrato, JSON.stringify(itensFinal),
+             clausulas.prazoPagamentoDias, clausulas.percentualJurosMora, clausulas.percentualMultaMora,
+             clausulas.prazoSubstituicaoHoras, clausulas.prazoInicioServicoHoras, clausulas.percentualMultaInadimplemento,
+             clausulas.avisoPrevioRescisaoDias, clausulas.foroComarca, id]
         );
         if (result.affectedRows === 0) return res.status(404).json({ error: 'Contrato não encontrado.' });
         const [rows] = await db.query('SELECT * FROM terceiro_contratos WHERE id = ?', [id]);
